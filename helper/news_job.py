@@ -46,11 +46,10 @@ async def broadcast_news(app: Client):
 
         try:
             caption = (
-                f"<blockquote><b>{item.title}</b></blockquote>\n\n"
-                f"<blockquote><b>{item.summary}</b></blockquote>\n\n"
-                f"──── 📖 <a href='{item.source_url}'><b>SOURCE</b></a> ────\n"
-                f"── » <blockquote><b>{CHNL_USERNAME}</b></blockquote>"
-            )
+    f"<blockquote><b>{item.title}</b></blockquote>\n\n"
+    f"<blockquote><b>{item.summary}</b></blockquote>\n\n"
+    f'<a href="https://t.me/Anicore_Animes">Anicore Animes</a>'
+)
             markup = get_markup(item.link)
 
             for channel in target_channels:
