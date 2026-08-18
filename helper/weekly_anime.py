@@ -7,41 +7,22 @@ import httpx
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
-)
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.db import db
 from config import LOG_CHANNEL
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logger = logging.getLogger("WeeklyAnime")
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 ANILIST_URL = "https://graphql.anilist.co"
-
 TOP_COUNT = 16
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# Telegram media captions have a 1024 character limit.
-# We keep the text messages below the normal Telegram
-# message limit as well.
-MAX_MEDIA_CAPTION = 1024
-MAX_TEXT_MESSAGE = 4096
-
 
 # ============================================================
-# ANILIST QUERY
+# ANILIST
 # ============================================================
 
 ANILIST_QUERY = """
@@ -70,10 +51,8 @@ query {
       episodes
       status
       genres
-
       season
       seasonYear
-
       siteUrl
 
       nextAiringEpisode {
@@ -91,15 +70,6 @@ query {
 # ============================================================
 
 def resolve_chat_id(channel):
-    """
-    Convert numeric Telegram channel IDs to int.
-
-    Examples:
-
-        "-1001234567890" -> -1001234567890
-        -1001234567890   -> -1001234567890
-        "@mychannel"     -> "@mychannel"
-    """
 
     try:
 
@@ -123,13 +93,10 @@ def resolve_chat_id(channel):
 
 
 # ============================================================
-# ANIME TITLE
+# TITLE
 # ============================================================
 
 def get_anime_title(anime):
-    """
-    Get the best available AniList title.
-    """
 
     title = anime.get("title") or {}
 
@@ -139,6 +106,22 @@ def get_anime_title(anime):
         or title.get("native")
         or "Unknown Anime"
     )
+
+
+# ============================================================
+# SCORE
+# ============================================================
+
+def format_score(score):
+
+    if score is None:
+        return "N/A"
+
+    try:
+        return f"{float(score) / 10:.1f}/10"
+
+    except Exception:
+        return "N/A"
 
 
 # ============================================================
@@ -164,22 +147,6 @@ def get_status(anime):
 
 
 # ============================================================
-# SCORE
-# ============================================================
-
-def format_score(score):
-
-    if score is None:
-        return "N/A"
-
-    try:
-        return f"{float(score) / 10:.1f}/10"
-
-    except Exception:
-        return "N/A"
-
-
-# ============================================================
 # IMAGE
 # ============================================================
 
@@ -194,7 +161,7 @@ def get_cover_image(anime):
 
 
 # ============================================================
-# FETCH TOP ANIME
+# FETCH TOP 16
 # ============================================================
 
 async def fetch_top_anime():
@@ -226,10 +193,6 @@ async def fetch_top_anime():
             data = response.json()
 
 
-        # ----------------------------------------------------
-        # API ERRORS
-        # ----------------------------------------------------
-
         if data.get("errors"):
 
             logger.error(
@@ -240,11 +203,7 @@ async def fetch_top_anime():
             return []
 
 
-        # ----------------------------------------------------
-        # GET MEDIA
-        # ----------------------------------------------------
-
-        media = (
+        anime_list = (
             data
             .get("data", {})
             .get("Page", {})
@@ -252,31 +211,25 @@ async def fetch_top_anime():
         )
 
 
-        if not media:
+        if not anime_list:
 
             logger.warning(
-                "[WeeklyAnime] AniList returned no anime."
+                "[WeeklyAnime] No anime returned."
             )
 
             return []
 
 
-        # ----------------------------------------------------
-        # ONLY ANIME WITH RATINGS
-        # ----------------------------------------------------
-
-        media = [
+        # Only anime with a rating
+        anime_list = [
             anime
-            for anime in media
+            for anime in anime_list
             if anime.get("averageScore") is not None
         ]
 
 
-        # ----------------------------------------------------
-        # SORT BY SCORE
-        # ----------------------------------------------------
-
-        media.sort(
+        # Highest rated first
+        anime_list.sort(
             key=lambda anime: (
                 anime.get("averageScore") or 0
             ),
@@ -284,26 +237,13 @@ async def fetch_top_anime():
         )
 
 
-        # ----------------------------------------------------
-        # TOP 16
-        # ----------------------------------------------------
-
-        result = media[:TOP_COUNT]
-
-
-        logger.info(
-            "[WeeklyAnime] Found %s anime.",
-            len(result)
-        )
-
-
-        return result
+        return anime_list[:TOP_COUNT]
 
 
     except httpx.HTTPError as e:
 
         logger.error(
-            "[WeeklyAnime] AniList HTTP error: %s",
+            "[WeeklyAnime] HTTP error: %s",
             e
         )
 
@@ -313,7 +253,7 @@ async def fetch_top_anime():
     except Exception as e:
 
         logger.exception(
-            "[WeeklyAnime] Failed to fetch anime: %s",
+            "[WeeklyAnime] Fetch error: %s",
             e
         )
 
@@ -321,25 +261,20 @@ async def fetch_top_anime():
 
 
 # ============================================================
-# BUILD ONE ANIME ENTRY
+# BUILD SINGLE ANIME CAPTION
 # ============================================================
 
-def build_anime_entry(index, anime):
+def build_anime_caption(index, anime):
 
     title = escape(
         get_anime_title(anime)
     )
 
-    score = escape(
-        format_score(
-            anime.get("averageScore")
-        )
+    score = format_score(
+        anime.get("averageScore")
     )
 
-    episodes = anime.get("episodes")
-
-    if episodes is None:
-        episodes = "?"
+    episodes = anime.get("episodes") or "?"
 
     status = escape(
         get_status(anime)
@@ -348,8 +283,8 @@ def build_anime_entry(index, anime):
     genres = anime.get("genres") or []
 
     genres = [
-        escape(str(g))
-        for g in genres[:3]
+        escape(str(genre))
+        for genre in genres[:4]
     ]
 
     genre_text = (
@@ -358,10 +293,9 @@ def build_anime_entry(index, anime):
         else "N/A"
     )
 
-    site_url = anime.get("siteUrl")
 
     # --------------------------------------------------------
-    # MEDALS
+    # RANK
     # --------------------------------------------------------
 
     medals = {
@@ -370,9 +304,9 @@ def build_anime_entry(index, anime):
         3: "🥉"
     }
 
-    position = medals.get(
+    rank = medals.get(
         index,
-        f"#{index}"
+        f"🏅 #{index}"
     )
 
 
@@ -380,9 +314,11 @@ def build_anime_entry(index, anime):
     # TITLE LINK
     # --------------------------------------------------------
 
+    site_url = anime.get("siteUrl")
+
     if site_url:
 
-        title_text = (
+        title_line = (
             f'<a href="{escape(site_url, quote=True)}">'
             f'<b>{title}</b>'
             f'</a>'
@@ -390,284 +326,153 @@ def build_anime_entry(index, anime):
 
     else:
 
-        title_text = f"<b>{title}</b>"
+        title_line = f"<b>{title}</b>"
 
 
     # --------------------------------------------------------
-    # ENTRY
+    # DATE
     # --------------------------------------------------------
 
-    return (
-        f"{position} {title_text}\n"
-        f"   ⭐ <b>Rating:</b> {score}\n"
-        f"   🎬 <b>Episodes:</b> {episodes}\n"
-        f"   📡 <b>Status:</b> {status}\n"
-        f"   🏷 <b>Genres:</b> {genre_text}\n"
-    )
-
-
-# ============================================================
-# BUILD HEADER
-# ============================================================
-
-def build_header():
-
-    today = datetime.now(
-        IST
-    )
+    today = datetime.now(IST)
 
     return (
-        "<blockquote>"
-        "<b>🏆 WEEKLY TOP 16 ANIME</b>"
-        "</blockquote>\n\n"
-        f"<b>📅 Updated:</b> "
+        f"{rank} <b>Wᴇᴇᴋʟʏ Tᴏᴘ 𝟷𝟼</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"🎬 {title_line}\n\n"
+
+        f"⭐ <b>Rᴀᴛɪɴɢ:</b> {score}\n"
+        f"📺 <b>Eᴘɪsᴏᴅᴇs:</b> {episodes}\n"
+        f"📡 <b>Sᴛᴀᴛᴜs:</b> {status}\n"
+        f"🏷 <b>Gᴇɴʀᴇs:</b> {genre_text}\n\n"
+
+        f"📅 <b>Wᴇᴇᴋ:</b> "
         f"{today.strftime('%d %B %Y')}\n\n"
+
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"✦ <b>Sᴏᴜʀᴄᴇ:</b> AɴɪLɪsᴛ"
     )
 
 
 # ============================================================
-# BUILD FOOTER
+# SEND ONE ANIME
 # ============================================================
 
-def build_footer():
-
-    return (
-        "\n"
-        "<blockquote>"
-        "✦ Updated every Sunday\n"
-        "✦ Source: AniList"
-        "</blockquote>"
-    )
-
-
-# ============================================================
-# BUILD TOP 16 TEXT
-# ============================================================
-
-def build_caption(anime_list):
-
-    header = build_header()
-
-    entries = []
-
-    for index, anime in enumerate(
-        anime_list,
-        start=1
-    ):
-
-        entries.append(
-            build_anime_entry(
-                index,
-                anime
-            )
-        )
-
-    footer = build_footer()
-
-    text = (
-        header
-        + "\n".join(entries)
-        + footer
-    )
-
-    return text
-
-
-# ============================================================
-# SPLIT LONG TELEGRAM TEXT
-# ============================================================
-
-def split_text(text, max_length=MAX_TEXT_MESSAGE):
-
-    if len(text) <= max_length:
-        return [text]
-
-
-    parts = []
-
-    current = ""
-
-    for line in text.split("\n"):
-
-        # ----------------------------------------------------
-        # Normal line
-        # ----------------------------------------------------
-
-        if len(current) + len(line) + 1 <= max_length:
-
-            current += (
-                line
-                + "\n"
-            )
-
-            continue
-
-
-        # ----------------------------------------------------
-        # Save current part
-        # ----------------------------------------------------
-
-        if current.strip():
-
-            parts.append(
-                current.rstrip()
-            )
-
-
-        # ----------------------------------------------------
-        # Handle a single very long line
-        # ----------------------------------------------------
-
-        if len(line) > max_length:
-
-            start = 0
-
-            while start < len(line):
-
-                end = start + max_length
-
-                parts.append(
-                    line[start:end]
-                )
-
-                start = end
-
-            current = ""
-
-        else:
-
-            current = line + "\n"
-
-
-    if current.strip():
-
-        parts.append(
-            current.rstrip()
-        )
-
-
-    return parts
-
-
-# ============================================================
-# SEND ONE CHANNEL
-# ============================================================
-
-async def send_to_channel(
+async def send_single_anime(
     app: Client,
     chat_id,
-    anime_list,
-    full_text
+    index,
+    anime
 ):
 
+    title = get_anime_title(anime)
+
+    image_url = get_cover_image(anime)
+
+    caption = build_anime_caption(
+        index,
+        anime
+    )
+
+
     # --------------------------------------------------------
-    # SEND POSTER SEPARATELY
-    #
-    # This avoids MEDIA_CAPTION_TOO_LONG.
+    # BUTTON
     # --------------------------------------------------------
 
-    first_anime = anime_list[0]
+    buttons = []
 
-    image_url = get_cover_image(
-        first_anime
+    site_url = anime.get("siteUrl")
+
+    if site_url:
+
+        buttons.append(
+            InlineKeyboardButton(
+                "🎬 Wᴀᴛᴄʜ / Mᴏʀᴇ Iɴғᴏ",
+                url=site_url
+            )
+        )
+
+
+    buttons.append(
+        InlineKeyboardButton(
+            f"🏆 #{index} Tᴏᴘ 𝟷𝟼",
+            callback_data=f"weekly_rank_{index}"
+        )
     )
 
 
     keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✦ AniList",
-                    url="https://anilist.co"
-                )
-            ]
-        ]
+        [buttons]
     )
 
 
+    # --------------------------------------------------------
+    # SEND POSTER
+    # --------------------------------------------------------
+
+    if image_url:
+
+        try:
+
+            await app.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+
+            logger.info(
+                "[WeeklyAnime] Sent #%s %s to %s",
+                index,
+                title,
+                chat_id
+            )
+
+            return True
+
+
+        except Exception as e:
+
+            logger.warning(
+                "[WeeklyAnime] "
+                "Poster failed for #%s (%s): %s",
+                index,
+                title,
+                e
+            )
+
+
+    # --------------------------------------------------------
+    # FALLBACK TEXT MESSAGE
+    # --------------------------------------------------------
+
     try:
 
-        # ----------------------------------------------------
-        # POSTER
-        # ----------------------------------------------------
-
-        if image_url:
-
-            try:
-
-                await app.send_photo(
-                    chat_id=chat_id,
-                    photo=image_url
-                )
-
-                logger.info(
-                    "[WeeklyAnime] Poster sent to %s",
-                    chat_id
-                )
-
-            except Exception as e:
-
-                logger.warning(
-                    "[WeeklyAnime] "
-                    "Could not send poster to %s: %s",
-                    chat_id,
-                    e
-                )
-
-
-        # ----------------------------------------------------
-        # TEXT
-        #
-        # Sent separately, so it can be up to 4096 chars.
-        # ----------------------------------------------------
-
-        parts = split_text(
-            full_text,
-            MAX_TEXT_MESSAGE
+        await app.send_message(
+            chat_id=chat_id,
+            text=caption,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=False
         )
 
-
-        for index, part in enumerate(parts):
-
-            try:
-
-                await app.send_message(
-                    chat_id=chat_id,
-                    text=part,
-                    parse_mode=ParseMode.HTML,
-
-                    # Only show the button on the final message.
-                    reply_markup=(
-                        keyboard
-                        if index == len(parts) - 1
-                        else None
-                    ),
-
-                    disable_web_page_preview=True
-                )
-
-            except Exception as e:
-
-                logger.error(
-                    "[WeeklyAnime] "
-                    "Failed sending part %s/%s to %s: %s",
-                    index + 1,
-                    len(parts),
-                    chat_id,
-                    e
-                )
-
-                return False
-
+        logger.info(
+            "[WeeklyAnime] Sent text fallback #%s to %s",
+            index,
+            chat_id
+        )
 
         return True
 
 
     except Exception as e:
 
-        logger.exception(
+        logger.error(
             "[WeeklyAnime] "
-            "Failed sending weekly post to %s: %s",
+            "Failed #%s (%s) to %s: %s",
+            index,
+            title,
             chat_id,
             e
         )
@@ -676,18 +481,17 @@ async def send_to_channel(
 
 
 # ============================================================
-# LOG MESSAGE
+# SEND LOG
 # ============================================================
 
 async def send_log(
-    app: Client,
+    app,
     anime_list,
-    sent_count,
-    failed_count
+    successful,
+    failed
 ):
 
     if not LOG_CHANNEL:
-
         return
 
 
@@ -698,43 +502,34 @@ async def send_log(
         )
 
 
-        # ----------------------------------------------------
-        # If LOG_CHANNEL is accidentally invalid,
-        # don't break the weekly job.
-        # ----------------------------------------------------
+        first = anime_list[0]
 
-        log_text = (
-            "<b>📊 WEEKLY ANIME LOG</b>\n\n"
+        text = (
+            "<b>📊 WEEKLY TOP 16 LOG</b>\n\n"
 
-            f"🏆 <b>Top:</b> {len(anime_list)}\n"
+            f"🏆 Anime: "
+            f"<b>{escape(get_anime_title(first))}</b>\n"
 
-            f"✅ <b>Successful:</b> "
-            f"{sent_count}\n"
+            f"⭐ Rating: "
+            f"<b>{format_score(first.get('averageScore'))}</b>\n\n"
 
-            f"❌ <b>Failed:</b> "
-            f"{failed_count}\n\n"
-
-            f"🥇 <b>Top Anime:</b> "
-            f"{escape(get_anime_title(anime_list[0]))}\n"
-
-            f"⭐ <b>Rating:</b> "
-            f"{format_score(anime_list[0].get('averageScore'))}"
+            f"✅ Successful: <b>{successful}</b>\n"
+            f"❌ Failed: <b>{failed}</b>\n"
+            f"📊 Total: <b>{len(anime_list)}</b>"
         )
 
 
         await app.send_message(
             chat_id=log_id,
-            text=log_text,
+            text=text,
             parse_mode=ParseMode.HTML
         )
 
 
     except Exception as e:
 
-        # ----------------------------------------------------
         # IMPORTANT:
-        # LOG FAILURE MUST NOT STOP THE JOB.
-        # ----------------------------------------------------
+        # A bad LOG_CHANNEL must NEVER stop the job.
 
         logger.warning(
             "[WeeklyAnime] "
@@ -744,16 +539,14 @@ async def send_log(
 
 
 # ============================================================
-# MAIN WEEKLY FUNCTION
+# MAIN FUNCTION
 # ============================================================
 
-async def send_weekly_anime(
-    app: Client
-):
+async def send_weekly_anime(app: Client):
 
     logger.info(
         "[WeeklyAnime] "
-        "Starting weekly Top %s job...",
+        "Starting Weekly Top %s...",
         TOP_COUNT
     )
 
@@ -769,50 +562,32 @@ async def send_weekly_anime(
 
         logger.warning(
             "[WeeklyAnime] "
-            "No anime available. Job cancelled."
+            "No anime found."
         )
 
         return False
 
 
     # --------------------------------------------------------
-    # BUILD TEXT
-    # --------------------------------------------------------
-
-    full_text = build_caption(
-        anime_list
-    )
-
-
-    logger.info(
-        "[WeeklyAnime] "
-        "Generated text length: %s characters",
-        len(full_text)
-    )
-
-
-    # --------------------------------------------------------
-    # GET CHANNELS
+    # CHANNELS
     # --------------------------------------------------------
 
     try:
 
-        target_channels = (
-            await db.get_all_channels()
-        )
+        channels = await db.get_all_channels()
 
     except Exception as e:
 
         logger.exception(
             "[WeeklyAnime] "
-            "Could not get target channels: %s",
+            "Database error: %s",
             e
         )
 
         return False
 
 
-    if not target_channels:
+    if not channels:
 
         logger.warning(
             "[WeeklyAnime] "
@@ -823,15 +598,14 @@ async def send_weekly_anime(
 
 
     # --------------------------------------------------------
-    # SEND TO CHANNELS
+    # SEND
     # --------------------------------------------------------
 
-    sent_count = 0
+    successful = 0
+    failed = 0
 
-    failed_count = 0
 
-
-    for channel in target_channels:
+    for channel in channels:
 
         chat_id = resolve_chat_id(
             channel
@@ -840,33 +614,67 @@ async def send_weekly_anime(
 
         logger.info(
             "[WeeklyAnime] "
-            "Sending Top %s to %s...",
-            TOP_COUNT,
+            "Sending Top %s to %s",
+            len(anime_list),
             chat_id
         )
 
 
-        success = await send_to_channel(
-            app=app,
-            chat_id=chat_id,
-            anime_list=anime_list,
-            full_text=full_text
-        )
+        channel_success = 0
 
 
-        if success:
+        for index, anime in enumerate(
+            anime_list,
+            start=1
+        ):
 
-            sent_count += 1
+            try:
+
+                result = await send_single_anime(
+                    app=app,
+                    chat_id=chat_id,
+                    index=index,
+                    anime=anime
+                )
+
+
+                if result:
+
+                    channel_success += 1
+
+
+                # Small delay so Telegram isn't hit
+                # with 16 requests at exactly the same time.
+                await __import__("asyncio").sleep(0.5)
+
+
+            except Exception as e:
+
+                logger.error(
+                    "[WeeklyAnime] "
+                    "Unexpected error #%s in %s: %s",
+                    index,
+                    chat_id,
+                    e
+                )
+
+
+        if channel_success == len(anime_list):
+
+            successful += 1
 
         else:
 
-            failed_count += 1
+            failed += 1
 
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Continue to next channel even when this one fails.
-        # ----------------------------------------------------
+        logger.info(
+            "[WeeklyAnime] "
+            "Channel %s: %s/%s sent",
+            chat_id,
+            channel_success,
+            len(anime_list)
+        )
 
 
     # --------------------------------------------------------
@@ -876,22 +684,17 @@ async def send_weekly_anime(
     await send_log(
         app=app,
         anime_list=anime_list,
-        sent_count=sent_count,
-        failed_count=failed_count
+        successful=successful,
+        failed=failed
     )
 
-
-    # --------------------------------------------------------
-    # FINAL LOG
-    # --------------------------------------------------------
 
     logger.info(
         "[WeeklyAnime] "
-        "Weekly job completed. "
-        "Sent: %s | Failed: %s",
-        sent_count,
-        failed_count
+        "Completed. Channels successful: %s | failed: %s",
+        successful,
+        failed
     )
 
 
-    return sent_count > 0
+    return successful > 0
