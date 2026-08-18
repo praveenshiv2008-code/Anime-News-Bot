@@ -17,3 +17,4 @@ START_PIC = os.environ.get("START_PIC", "https://ibb.co/mVkSySr7")
 HELP_PIC = os.environ.get("HELP_PIC", "https://ibb.co/mVkSySr7")
 ABOUT_PIC = os.environ.get("ABOUT_PIC", "https://ibb.co/mVkSySr7")
 CHNL_USERNAME = "@seishiro_atanime"
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
