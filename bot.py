@@ -1,24 +1,15 @@
 import logging
 import asyncio
-import os
 
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from pyrogram import Client
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiohttp import web
 
-from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
-from pyrogram.types import Message
-from html import escape
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from config import *
-
 from helper.news_job import broadcast_news
 from helper.weekly_anime import send_weekly_anime
-from helper.anime_images import send_all_anime_images
 
 
 # ============================================================
@@ -41,140 +32,6 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 # ============================================================
-# /IMG COMMAND
-# ============================================================
-
-@Client.on_message(
-    filters.command("img")
-)
-async def img_command(
-    client,
-    message: Message
-):
-
-    # --------------------------------------------------------
-    # Check anime name
-    # --------------------------------------------------------
-
-    if len(message.command) < 2:
-
-        await message.reply_text(
-            "🖼️ <b>Anime Image Search</b>\n\n"
-            "Use:\n"
-            "<code>/img anime name</code>\n\n"
-            "Example:\n"
-            "<code>/img Solo Leveling</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-
-    anime_name = " ".join(
-        message.command[1:]
-    ).strip()
-
-
-    if not anime_name:
-
-        await message.reply_text(
-            "❌ Please enter an anime name.",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-
-    # --------------------------------------------------------
-    # Loading message
-    # --------------------------------------------------------
-
-    loading = await message.reply_text(
-        "🖼️ <b>Searching anime artwork...</b>",
-        parse_mode=ParseMode.HTML
-    )
-
-
-    try:
-
-        count = await send_all_anime_images(
-
-            client,
-
-            message.chat.id,
-
-            anime_name
-
-        )
-
-
-        # ----------------------------------------------------
-        # Remove loading message
-        # ----------------------------------------------------
-
-        try:
-
-            await loading.delete()
-
-        except Exception:
-
-            pass
-
-
-        # ----------------------------------------------------
-        # No images
-        # ----------------------------------------------------
-
-        if count == 0:
-
-            await message.reply_text(
-                "❌ <b>No suitable images found.</b>\n\n"
-                f"Anime: <code>{escape(anime_name)}</code>",
-                parse_mode=ParseMode.HTML
-            )
-
-            return
-
-
-        # ----------------------------------------------------
-        # Success
-        #
-        # No message is sent here.
-        #
-        # /img is supposed to send images only.
-        # ----------------------------------------------------
-
-        logger.info(
-            "[IMG] Sent %s images for '%s'",
-            count,
-            anime_name
-        )
-
-
-    except Exception as e:
-
-        logger.exception(
-            "[IMG] Image search failed"
-        )
-
-
-        try:
-
-            await loading.edit_text(
-
-                "❌ <b>Image search failed.</b>\n\n"
-                f"<code>{escape(str(e)[:800])}</code>",
-
-                parse_mode=ParseMode.HTML
-
-            )
-
-        except Exception:
-
-            pass
-
-
-# ============================================================
 # BOT
 # ============================================================
 
@@ -183,24 +40,19 @@ class AnimeBot(Client):
     def __init__(self):
 
         super().__init__(
-
             name="anime_session",
 
             api_id=API_ID,
-
             api_hash=API_HASH,
-
             bot_token=BOT_TOKEN,
 
-            plugins=dict(
-                root="plugins"
-            )
-
+            # Automatically load everything inside plugins/
+            plugins={
+                "root": "plugins"
+            }
         )
 
-
         self.web_runner = None
-
         self.scheduler = None
 
 
@@ -211,11 +63,10 @@ class AnimeBot(Client):
     async def start(self):
 
         # ----------------------------------------------------
-        # Start Pyrogram
+        # START PYROGRAM
         # ----------------------------------------------------
 
         await super().start()
-
 
         logger.info(
             "✅ Pyrogram Client Started"
@@ -223,7 +74,7 @@ class AnimeBot(Client):
 
 
         # ----------------------------------------------------
-        # Get bot information
+        # BOT INFORMATION
         # ----------------------------------------------------
 
         try:
@@ -231,7 +82,7 @@ class AnimeBot(Client):
             me = await self.get_me()
 
             logger.info(
-                "🤖 Logged in as @%s",
+                "🤖 Bot: @%s",
                 me.username
             )
 
@@ -239,6 +90,43 @@ class AnimeBot(Client):
 
             logger.warning(
                 "Could not get bot information: %s",
+                e
+            )
+
+
+        # ----------------------------------------------------
+        # RESTART NOTIFICATION
+        # ----------------------------------------------------
+        #
+        # Add this to Render environment variables:
+        #
+        # RESTART_LOG_CHAT=-100xxxxxxxxxx
+        #
+        # Leave empty if you don't want restart messages.
+        #
+
+        try:
+
+            restart_chat = globals().get(
+                "RESTART_LOG_CHAT",
+                ""
+            )
+
+            if restart_chat:
+
+                await self.send_message(
+                    chat_id=restart_chat,
+                    text="✦ ʙᴏᴛ ʀᴇsᴛᴀʀᴛᴇᴅ ✓"
+                )
+
+                logger.info(
+                    "✅ Restart notification sent"
+                )
+
+        except Exception as e:
+
+            logger.warning(
+                "Could not send restart notification: %s",
                 e
             )
 
@@ -335,14 +223,22 @@ class AnimeBot(Client):
         # FIRST RSS CHECK
         # ====================================================
 
-        asyncio.create_task(
-            self._run_first_news_check()
-        )
+        try:
 
+            asyncio.create_task(
+                broadcast_news(self)
+            )
 
-        logger.info(
-            "✅ First broadcast task launched"
-        )
+            logger.info(
+                "✅ First RSS broadcast task launched"
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                "Could not launch first RSS check: %s",
+                e
+            )
 
 
         # ====================================================
@@ -352,31 +248,19 @@ class AnimeBot(Client):
         async def health(request):
 
             return web.Response(
-
-                text=(
-                    "Anime News Bot is running! ✅"
-                ),
-
+                text="Anime News Bot is running! ✅",
                 status=200
-
             )
 
 
-        # ----------------------------------------------------
-        # Create web application
-        # ----------------------------------------------------
-
         app = web.Application()
 
-
-        # ----------------------------------------------------
-        # Routes
-        # ----------------------------------------------------
 
         app.router.add_get(
             "/",
             health
         )
+
 
         app.router.add_get(
             "/health",
@@ -385,25 +269,24 @@ class AnimeBot(Client):
 
 
         # ----------------------------------------------------
-        # Runner
+        # WEB RUNNER
         # ----------------------------------------------------
 
         self.web_runner = web.AppRunner(
             app
         )
 
-
         await self.web_runner.setup()
 
 
         # ----------------------------------------------------
-        # Render PORT
+        # PORT
         # ----------------------------------------------------
 
         port = int(
-            os.environ.get(
+            globals().get(
                 "PORT",
-                PORT
+                10000
             )
         )
 
@@ -429,37 +312,51 @@ class AnimeBot(Client):
         )
 
 
-    # ========================================================
-    # FIRST NEWS CHECK
-    # ========================================================
+        # ====================================================
+        # READY
+        # ====================================================
 
-    async def _run_first_news_check(self):
+        logger.info(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
 
-        try:
+        logger.info(
+            "🚀 ANIME NEWS BOT IS ONLINE"
+        )
 
-            await broadcast_news(
-                self
-            )
+        logger.info(
+            "📡 RSS News       : ONLINE"
+        )
 
-        except Exception as e:
+        logger.info(
+            "🏆 Weekly Top 16  : ONLINE"
+        )
 
-            logger.exception(
-                "Initial RSS broadcast failed: %s",
-                e
-            )
+        logger.info(
+            "🔎 Anime Search   : ONLINE"
+        )
+
+        logger.info(
+            "🖼 HD Images      : ONLINE"
+        )
+
+        logger.info(
+            "🔥 Trending       : ONLINE"
+        )
+
+        logger.info(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
 
 
     # ========================================================
     # STOP
     # ========================================================
 
-    async def stop(
-        self,
-        *args
-    ):
+    async def stop(self, *args):
 
         # ----------------------------------------------------
-        # Stop scheduler
+        # STOP SCHEDULER
         # ----------------------------------------------------
 
         if self.scheduler:
@@ -470,22 +367,20 @@ class AnimeBot(Client):
                     wait=False
                 )
 
-
                 logger.info(
                     "🛑 Scheduler stopped"
                 )
 
-
             except Exception as e:
 
-                logger.error(
+                logger.warning(
                     "Scheduler shutdown error: %s",
                     e
                 )
 
 
         # ----------------------------------------------------
-        # Stop web server
+        # STOP WEB SERVER
         # ----------------------------------------------------
 
         if self.web_runner:
@@ -494,22 +389,20 @@ class AnimeBot(Client):
 
                 await self.web_runner.cleanup()
 
-
                 logger.info(
                     "🛑 Web server stopped"
                 )
 
-
             except Exception as e:
 
-                logger.error(
+                logger.warning(
                     "Web server shutdown error: %s",
                     e
                 )
 
 
         # ----------------------------------------------------
-        # Stop Pyrogram
+        # STOP PYROGRAM
         # ----------------------------------------------------
 
         try:
@@ -517,12 +410,12 @@ class AnimeBot(Client):
             await super().stop()
 
             logger.info(
-                "🛑 Bot Stopped"
+                "🛑 Bot stopped"
             )
 
         except Exception as e:
 
-            logger.error(
+            logger.warning(
                 "Pyrogram shutdown error: %s",
                 e
             )
