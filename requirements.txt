@@ -6,3 +6,4 @@ apscheduler
 aiosqlite
 beautifulsoup4
 motor
+httpx
