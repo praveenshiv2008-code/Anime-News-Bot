@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import tempfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from html import escape
@@ -8,25 +10,13 @@ import httpx
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.db import db
 from config import LOG_CHANNEL
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
 logger = logging.getLogger("WeeklyAnime")
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 ANILIST_URL = "https://graphql.anilist.co"
 
@@ -61,22 +51,17 @@ query {
       }
 
       coverImage {
+        extraLarge
         large
         medium
       }
 
       averageScore
-
       episodes
-
       status
-
       genres
-
       season
-
       seasonYear
-
       siteUrl
 
       nextAiringEpisode {
@@ -97,7 +82,7 @@ query {
 
 
 # ============================================================
-# RESOLVE CHAT ID
+# CHAT ID
 # ============================================================
 
 def resolve_chat_id(channel):
@@ -112,7 +97,6 @@ def resolve_chat_id(channel):
             channel = channel.strip()
 
             if channel.lstrip("-").isdigit():
-
                 return int(channel)
 
             return channel
@@ -147,36 +131,20 @@ def get_anime_title(anime):
 def format_score(score):
 
     if score is None:
-
         return "N/A"
 
     try:
-
         return f"{float(score) / 10:.1f}/10"
 
     except Exception:
-
         return "N/A"
 
 
 # ============================================================
-# VOTE COUNT
+# VOTES
 # ============================================================
 
 def get_vote_count(anime):
-
-    """
-    Calculate total number of votes from AniList's
-    scoreDistribution.
-
-    Example:
-
-        10 -> 500 votes
-        9  -> 1200 votes
-        8  -> 3000 votes
-
-    Total votes = 4700
-    """
 
     stats = anime.get("stats") or {}
 
@@ -185,59 +153,43 @@ def get_vote_count(anime):
         or []
     )
 
-    total_votes = 0
+    total = 0
 
     for item in distribution:
 
         try:
 
-            amount = int(
+            total += int(
                 item.get("amount") or 0
             )
-
-            total_votes += amount
 
         except Exception:
 
             continue
 
-    return total_votes
+    return total
 
-
-# ============================================================
-# FORMAT VOTES
-# ============================================================
 
 def format_votes(votes):
 
     try:
-
         votes = int(votes)
 
     except Exception:
-
         return "0"
 
 
     if votes >= 1_000_000:
-
         return f"{votes / 1_000_000:.1f}M"
 
-
     if votes >= 100_000:
-
         return f"{votes / 1000:.0f}K"
 
-
     if votes >= 10_000:
-
         return f"{votes / 1000:.1f}K"
-
 
     if votes >= 1_000:
-
         return f"{votes / 1000:.1f}K"
-
 
     return f"{votes:,}"
 
@@ -251,15 +203,10 @@ def get_status(anime):
     status = anime.get("status")
 
     status_map = {
-
         "RELEASING": "Airing",
-
         "FINISHED": "Finished",
-
         "NOT_YET_RELEASED": "Not Yet Released",
-
         "CANCELLED": "Cancelled",
-
         "HIATUS": "Hiatus",
     }
 
@@ -270,27 +217,114 @@ def get_status(anime):
 
 
 # ============================================================
-# COVER IMAGE
+# HIGH QUALITY IMAGE URL
 # ============================================================
 
 def get_cover_image(anime):
 
     cover = anime.get("coverImage") or {}
 
+    # IMPORTANT:
+    # extraLarge is higher resolution than large.
     return (
-        cover.get("large")
+        cover.get("extraLarge")
+        or cover.get("large")
         or cover.get("medium")
     )
 
 
 # ============================================================
-# FETCH TOP ANIME
+# DOWNLOAD HIGH QUALITY IMAGE
+# ============================================================
+
+async def download_image(url):
+
+    if not url:
+        return None
+
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=REQUEST_TIMEOUT,
+            follow_redirects=True
+        ) as client:
+
+            response = await client.get(url)
+
+            response.raise_for_status()
+
+            content_type = (
+                response.headers
+                .get("content-type", "")
+                .lower()
+            )
+
+            if not content_type.startswith("image/"):
+
+                logger.warning(
+                    "[WeeklyAnime] "
+                    "URL did not return an image: %s",
+                    url
+                )
+
+                return None
+
+
+            # ------------------------------------------------
+            # Temporary file
+            # ------------------------------------------------
+
+            suffix = ".jpg"
+
+            if "png" in content_type:
+                suffix = ".png"
+
+            elif "webp" in content_type:
+                suffix = ".webp"
+
+
+            file = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix
+            )
+
+            file.write(
+                response.content
+            )
+
+            file.close()
+
+
+            logger.info(
+                "[WeeklyAnime] "
+                "Downloaded high-quality image: %.1f KB",
+                len(response.content) / 1024
+            )
+
+
+            return file.name
+
+
+    except Exception as e:
+
+        logger.warning(
+            "[WeeklyAnime] "
+            "High-quality image download failed: %s",
+            e
+        )
+
+        return None
+
+
+# ============================================================
+# FETCH TOP 16
 # ============================================================
 
 async def fetch_top_anime():
 
     logger.info(
-        "[WeeklyAnime] Fetching Top %s anime from AniList...",
+        "[WeeklyAnime] "
+        "Fetching Top %s from AniList...",
         TOP_COUNT
     )
 
@@ -301,7 +335,6 @@ async def fetch_top_anime():
         ) as client:
 
             response = await client.post(
-
                 ANILIST_URL,
 
                 json={
@@ -314,41 +347,27 @@ async def fetch_top_anime():
                 },
             )
 
-
             response.raise_for_status()
-
 
             data = response.json()
 
 
-        # ----------------------------------------------------
-        # GRAPHQL ERRORS
-        # ----------------------------------------------------
-
         if data.get("errors"):
 
             logger.error(
-                "[WeeklyAnime] AniList GraphQL error: %s",
+                "[WeeklyAnime] "
+                "AniList error: %s",
                 data.get("errors")
             )
 
             return []
 
 
-        # ----------------------------------------------------
-        # MEDIA
-        # ----------------------------------------------------
-
         anime_list = (
-
             data
-
             .get("data", {})
-
             .get("Page", {})
-
             .get("media", [])
-
         )
 
 
@@ -362,43 +381,23 @@ async def fetch_top_anime():
             return []
 
 
-        # ----------------------------------------------------
-        # REMOVE UNRATED
-        # ----------------------------------------------------
-
         anime_list = [
-
             anime
-
             for anime in anime_list
-
             if anime.get("averageScore") is not None
-
         ]
 
 
-        # ----------------------------------------------------
-        # SORT BY SCORE
-        # ----------------------------------------------------
-
         anime_list.sort(
-
             key=lambda anime: (
-
                 anime.get("averageScore") or 0
-
             ),
-
-            reverse=True,
+            reverse=True
         )
 
 
         result = anime_list[:TOP_COUNT]
 
-
-        # ----------------------------------------------------
-        # LOG RESULTS
-        # ----------------------------------------------------
 
         for index, anime in enumerate(
             result,
@@ -406,18 +405,13 @@ async def fetch_top_anime():
         ):
 
             logger.info(
-
-                "[WeeklyAnime] #%s %s | Score: %s | Votes: %s",
-
+                "[WeeklyAnime] #%s %s | Rating %s | Votes %s",
                 index,
-
                 get_anime_title(anime),
-
                 format_score(
                     anime.get("averageScore")
                 ),
-
-                get_vote_count(anime),
+                get_vote_count(anime)
             )
 
 
@@ -427,7 +421,8 @@ async def fetch_top_anime():
     except httpx.HTTPError as e:
 
         logger.error(
-            "[WeeklyAnime] AniList HTTP error: %s",
+            "[WeeklyAnime] "
+            "AniList HTTP error: %s",
             e
         )
 
@@ -437,7 +432,8 @@ async def fetch_top_anime():
     except Exception as e:
 
         logger.exception(
-            "[WeeklyAnime] Fetch error: %s",
+            "[WeeklyAnime] "
+            "Fetch error: %s",
             e
         )
 
@@ -445,7 +441,7 @@ async def fetch_top_anime():
 
 
 # ============================================================
-# BUILD ANIME CAPTION
+# BUILD CAPTION
 # ============================================================
 
 def build_anime_caption(
@@ -457,79 +453,50 @@ def build_anime_caption(
         get_anime_title(anime)
     )
 
-
     score = format_score(
         anime.get("averageScore")
     )
 
-
     votes = format_votes(
         get_vote_count(anime)
     )
-
 
     episodes = (
         anime.get("episodes")
         or "?"
     )
 
-
     status = escape(
         get_status(anime)
     )
-
 
     genres = anime.get(
         "genres"
     ) or []
 
-
     genres = [
-
-        escape(str(genre))
-
-        for genre in genres[:4]
-
+        escape(str(g))
+        for g in genres[:4]
     ]
 
-
     genre_text = (
-
         ", ".join(genres)
-
         if genres
-
         else "N/A"
-
     )
 
-
-    # --------------------------------------------------------
-    # RANK
-    # --------------------------------------------------------
 
     medals = {
-
         1: "🥇",
-
         2: "🥈",
-
-        3: "🥉",
+        3: "🥉"
     }
 
-
     rank = medals.get(
-
         index,
-
         f"🏅 #{index}"
-
     )
 
-
-    # --------------------------------------------------------
-    # ANILIST LINK
-    # --------------------------------------------------------
 
     site_url = anime.get(
         "siteUrl"
@@ -539,13 +506,11 @@ def build_anime_caption(
     if site_url:
 
         title_line = (
-
             f'<a href="'
             f'{escape(site_url, quote=True)}'
             f'">'
             f'<b>{title}</b>'
             f'</a>'
-
         )
 
     else:
@@ -555,24 +520,14 @@ def build_anime_caption(
         )
 
 
-    # --------------------------------------------------------
-    # DATE
-    # --------------------------------------------------------
-
     today = datetime.now(
         IST
     )
 
 
-    # --------------------------------------------------------
-    # CAPTION
-    # --------------------------------------------------------
-
     return (
-
         f"{rank} "
         f"<b>Wᴇᴇᴋʟʏ Tᴏᴘ 𝟷𝟼</b>\n"
-
         f"━━━━━━━━━━━━━━━━━━\n\n"
 
         f"🎬 {title_line}\n\n"
@@ -596,14 +551,12 @@ def build_anime_caption(
         f"{today.strftime('%d %B %Y')}\n\n"
 
         f"━━━━━━━━━━━━━━━━━━\n"
-
         f"✦ <b>Sᴏᴜʀᴄᴇ:</b> AɴɪLɪsᴛ"
-
     )
 
 
 # ============================================================
-# SEND SINGLE ANIME
+# SEND ONE ANIME
 # ============================================================
 
 async def send_single_anime(
@@ -617,11 +570,9 @@ async def send_single_anime(
         anime
     )
 
-
     image_url = get_cover_image(
         anime
     )
-
 
     caption = build_anime_caption(
         index,
@@ -630,69 +581,65 @@ async def send_single_anime(
 
 
     # --------------------------------------------------------
-    # BUTTONS
+    # BUTTON
     # --------------------------------------------------------
-
-    buttons = []
-
 
     site_url = anime.get(
         "siteUrl"
     )
 
+    keyboard = None
 
     if site_url:
 
-        buttons.append(
-
-            InlineKeyboardButton(
-
-                "🎬 AɴɪLɪsᴛ",
-
-                url=site_url
-
-            )
-
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🎬 AɴɪLɪsᴛ",
+                        url=site_url
+                    )
+                ]
+            ]
         )
 
 
-    keyboard = InlineKeyboardMarkup(
-        [buttons]
-    ) if buttons else None
-
-
     # --------------------------------------------------------
-    # SEND IMAGE + CAPTION
+    # DOWNLOAD HIGH QUALITY IMAGE
     # --------------------------------------------------------
+
+    image_file = None
+
 
     if image_url:
+
+        image_file = await download_image(
+            image_url
+        )
+
+
+    # --------------------------------------------------------
+    # SEND LOCAL IMAGE
+    # --------------------------------------------------------
+
+    if image_file:
 
         try:
 
             await app.send_photo(
-
                 chat_id=chat_id,
-
-                photo=image_url,
-
+                photo=image_file,
                 caption=caption,
-
                 parse_mode=ParseMode.HTML,
-
-                reply_markup=keyboard,
+                reply_markup=keyboard
             )
 
 
             logger.info(
-
                 "[WeeklyAnime] "
-                "Sent #%s %s to %s",
-
+                "High-quality #%s sent: %s",
                 index,
-
-                title,
-
-                chat_id,
+                title
             )
 
 
@@ -702,15 +649,62 @@ async def send_single_anime(
         except Exception as e:
 
             logger.warning(
-
                 "[WeeklyAnime] "
-                "Photo failed for #%s %s: %s",
-
+                "Local image send failed "
+                "#%s %s: %s",
                 index,
-
                 title,
+                e
+            )
 
-                e,
+
+        finally:
+
+            try:
+
+                os.remove(
+                    image_file
+                )
+
+            except Exception:
+
+                pass
+
+
+    # --------------------------------------------------------
+    # REMOTE IMAGE FALLBACK
+    # --------------------------------------------------------
+
+    if image_url:
+
+        try:
+
+            await app.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+
+
+            logger.info(
+                "[WeeklyAnime] "
+                "Remote image fallback sent #%s",
+                index
+            )
+
+
+            return True
+
+
+        except Exception as e:
+
+            logger.warning(
+                "[WeeklyAnime] "
+                "Remote image failed #%s: %s",
+                index,
+                e
             )
 
 
@@ -721,27 +715,11 @@ async def send_single_anime(
     try:
 
         await app.send_message(
-
             chat_id=chat_id,
-
             text=caption,
-
             parse_mode=ParseMode.HTML,
-
             reply_markup=keyboard,
-
-            disable_web_page_preview=False,
-        )
-
-
-        logger.info(
-
-            "[WeeklyAnime] "
-            "Text fallback sent #%s to %s",
-
-            index,
-
-            chat_id,
+            disable_web_page_preview=False
         )
 
 
@@ -751,25 +729,18 @@ async def send_single_anime(
     except Exception as e:
 
         logger.error(
-
             "[WeeklyAnime] "
-            "Failed #%s %s to %s: %s",
-
+            "Everything failed for #%s %s: %s",
             index,
-
             title,
-
-            chat_id,
-
-            e,
+            e
         )
-
 
         return False
 
 
 # ============================================================
-# SEND LOG
+# LOG
 # ============================================================
 
 async def send_log(
@@ -780,7 +751,6 @@ async def send_log(
 ):
 
     if not LOG_CHANNEL:
-
         return
 
 
@@ -790,15 +760,12 @@ async def send_log(
             LOG_CHANNEL
         )
 
-
         first = anime_list[0]
 
-
         text = (
-
             "<b>📊 WEEKLY TOP 16 LOG</b>\n\n"
 
-            f"🥇 <b>Top Anime:</b> "
+            f"🥇 <b>Top:</b> "
             f"{escape(get_anime_title(first))}\n"
 
             f"⭐ <b>Rating:</b> "
@@ -813,35 +780,24 @@ async def send_log(
             f"❌ <b>Failed:</b> "
             f"{failed}\n"
 
-            f"📊 <b>Total Anime:</b> "
+            f"📊 <b>Total:</b> "
             f"{len(anime_list)}"
-
         )
 
 
         await app.send_message(
-
             chat_id=log_id,
-
             text=text,
-
             parse_mode=ParseMode.HTML
-
         )
 
 
     except Exception as e:
 
-        # IMPORTANT:
-        # A broken LOG_CHANNEL does not stop the job.
-
         logger.warning(
-
             "[WeeklyAnime] "
             "Could not send log: %s",
-
             e
-
         )
 
 
@@ -883,20 +839,14 @@ async def send_weekly_anime(
 
     try:
 
-        channels = (
-            await db.get_all_channels()
-        )
-
+        channels = await db.get_all_channels()
 
     except Exception as e:
 
         logger.exception(
-
             "[WeeklyAnime] "
             "Database error: %s",
-
             e
-
         )
 
         return False
@@ -905,23 +855,20 @@ async def send_weekly_anime(
     if not channels:
 
         logger.warning(
-
             "[WeeklyAnime] "
             "No target channels configured."
-
         )
 
         return False
 
 
-    # --------------------------------------------------------
-    # SEND TO CHANNELS
-    # --------------------------------------------------------
-
     successful_channels = 0
-
     failed_channels = 0
 
+
+    # --------------------------------------------------------
+    # CHANNEL LOOP
+    # --------------------------------------------------------
 
     for channel in channels:
 
@@ -931,14 +878,10 @@ async def send_weekly_anime(
 
 
         logger.info(
-
             "[WeeklyAnime] "
             "Sending Top %s to %s",
-
             len(anime_list),
-
             chat_id
-
         )
 
 
@@ -946,38 +889,27 @@ async def send_weekly_anime(
 
 
         # ----------------------------------------------------
-        # SEND ALL 16
+        # SEND 16 INDIVIDUAL POSTS
         # ----------------------------------------------------
 
         for index, anime in enumerate(
-
             anime_list,
-
             start=1
-
         ):
 
             try:
 
                 result = await send_single_anime(
-
                     app=app,
-
                     chat_id=chat_id,
-
                     index=index,
-
                     anime=anime
-
                 )
 
 
                 if result:
-
                     sent_count += 1
 
-
-                # Prevent Telegram flood limits.
 
                 await asyncio.sleep(
                     DELAY_BETWEEN_POSTS
@@ -987,17 +919,12 @@ async def send_weekly_anime(
             except Exception as e:
 
                 logger.error(
-
                     "[WeeklyAnime] "
-                    "Unexpected error "
-                    "#%s in %s: %s",
-
+                    "Unexpected error #%s "
+                    "in %s: %s",
                     index,
-
                     chat_id,
-
                     e
-
                 )
 
 
@@ -1017,16 +944,11 @@ async def send_weekly_anime(
 
 
         logger.info(
-
             "[WeeklyAnime] "
             "Channel %s: %s/%s sent",
-
             chat_id,
-
             sent_count,
-
             len(anime_list)
-
         )
 
 
@@ -1035,33 +957,18 @@ async def send_weekly_anime(
     # --------------------------------------------------------
 
     await send_log(
-
         app=app,
-
         anime_list=anime_list,
-
         successful=successful_channels,
-
         failed=failed_channels
-
     )
 
 
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
-
     logger.info(
-
         "[WeeklyAnime] "
-        "Completed. "
-        "Successful channels: %s | "
-        "Failed channels: %s",
-
+        "Completed. Successful: %s | Failed: %s",
         successful_channels,
-
         failed_channels
-
     )
 
 
