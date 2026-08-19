@@ -1,14 +1,15 @@
+# plugins/img.py
+
 import asyncio
 import logging
+import os
 import re
 from io import BytesIO
-from urllib.parse import quote, urljoin
 
 import httpx
-from pyrogram import Client, filters
-from pyrogram.types import Message, InputMediaPhoto
 
-from config import TMDB_API_KEY
+from pyrogram import Client, filters, enums
+from pyrogram.types import Message, InputMediaPhoto
 
 
 # ============================================================
@@ -22,129 +23,381 @@ logger = logging.getLogger("AnimeImages")
 # API URLS
 # ============================================================
 
+TMDB_URL = "https://api.themoviedb.org/3"
 ANILIST_URL = "https://graphql.anilist.co"
 JIKAN_URL = "https://api.jikan.moe/v4"
-TMDB_URL = "https://api.themoviedb.org/3"
 KITSU_URL = "https://kitsu.io/api/edge"
 
+# Fanart.tv
 FANART_URL = "https://webservice.fanart.tv/v3"
-ANIMEPLANET_URL = "https://www.anime-planet.com"
+
+# Anime-Planet
+ANIMEPLANET_SEARCH = "https://www.anime-planet.com/anime/all"
 
 
 # ============================================================
-# OPTIONAL API KEYS
+# CONFIG
 # ============================================================
 
-# Add these to config.py if you have them.
-#
-# FANART_API_KEY = "YOUR_FANART_API_KEY"
-#
-# They are optional. The command will simply skip Fanart.tv
-# if no key is configured.
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
+FANART_API_KEY = os.getenv("FANART_API_KEY", "").strip()
 
-try:
-    from config import FANART_API_KEY
-except ImportError:
-    FANART_API_KEY = ""
+# /img has no number anymore.
+# This is the maximum number the bot will send.
+MAX_IMAGES = 30
 
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-DEFAULT_LIMIT = 30
-
-MAX_ALLOWED_LIMIT = 100
-
-TELEGRAM_BATCH_SIZE = 10
+# Telegram allows maximum 10 photos per media group.
+ALBUM_SIZE = 10
 
 MIN_FILE_SIZE = 5_000
 
-REQUEST_TIMEOUT = 25
+REQUEST_TIMEOUT = 30
+
+DOWNLOAD_CONCURRENCY = 10
 
 
 # ============================================================
-# SOURCE ALIASES
+# SOURCE NAMES
 # ============================================================
 
-SOURCE_ALIASES = {
-    "tmdb": "tmdb",
-    "themoviedb": "tmdb",
-
-    "anilist": "anilist",
-    "ani": "anilist",
-
-    "mal": "jikan",
-    "jikan": "jikan",
-
-    "kitsu": "kitsu",
-
-    "fanart": "fanart",
-    "fanarttv": "fanart",
-
-    "animeplanet": "animeplanet",
-    "planet": "animeplanet",
-
-    "all": "all",
+SOURCES = {
+    "tmdb",
+    "fanart",
+    "animeplanet",
+    "kitsu",
+    "anilist",
+    "jikan",
 }
+
+# /img = TMDB
+DEFAULT_SOURCE = "tmdb"
 
 
 # ============================================================
 # HTTP
 # ============================================================
 
-async def get_json(
+async def get_response(
     client,
     url,
     params=None,
-    json_data=None,
     headers=None,
 ):
+
     try:
 
-        if json_data is not None:
+        response = await client.get(
+            url,
+            params=params,
+            headers=headers,
+        )
 
-            response = await client.post(
-                url,
-                json=json_data,
-                headers=headers,
-            )
-
-        else:
-
-            response = await client.get(
-                url,
-                params=params,
-                headers=headers,
-            )
-
-        if response.status_code != 200:
-
-            logger.warning(
-                "HTTP %s: %s",
-                response.status_code,
-                url,
-            )
-
-            return None
-
-        try:
-
-            return response.json()
-
-        except Exception:
-
-            return None
+        return response
 
     except Exception as e:
 
         logger.warning(
-            "Request failed %s: %s",
+            "GET failed: %s | %s",
             url,
             e,
         )
 
         return None
+
+
+async def get_json(
+    client,
+    url,
+    params=None,
+    headers=None,
+):
+
+    response = await get_response(
+        client,
+        url,
+        params=params,
+        headers=headers,
+    )
+
+    if response is None:
+        return None
+
+    if response.status_code != 200:
+
+        logger.warning(
+            "HTTP %s: %s",
+            response.status_code,
+            url,
+        )
+
+        return None
+
+    try:
+
+        return response.json()
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# CLEAN TITLE
+# ============================================================
+
+def clean_title(title):
+
+    title = title.strip()
+
+    # Remove unnecessary surrounding quotes.
+    title = title.strip("\"'")
+
+    # Remove duplicate spaces.
+    title = re.sub(
+        r"\s+",
+        " ",
+        title,
+    )
+
+    return title.strip()
+
+
+# ============================================================
+# URL DEDUPLICATION
+# ============================================================
+
+def unique_urls(urls):
+
+    result = []
+    seen = set()
+
+    for url in urls:
+
+        if not url:
+            continue
+
+        url = str(url).strip()
+
+        if not url:
+            continue
+
+        # Normalize URL.
+        clean = url.split("?")[0].rstrip("/").lower()
+
+        if clean in seen:
+            continue
+
+        seen.add(clean)
+
+        result.append(url)
+
+    return result
+
+
+# ============================================================
+# DOWNLOAD IMAGE
+# ============================================================
+
+async def download_image(
+    client,
+    url,
+    semaphore,
+):
+
+    async with semaphore:
+
+        try:
+
+            response = await client.get(
+                url,
+                headers={
+                    "User-Agent":
+                        "Mozilla/5.0 "
+                        "(Android 10; Mobile) "
+                        "AppleWebKit/537.36 "
+                        "Chrome/120 Safari/537.36"
+                },
+            )
+
+            if response.status_code != 200:
+                return None
+
+            content_type = response.headers.get(
+                "content-type",
+                "",
+            ).lower()
+
+            if "image" not in content_type:
+                return None
+
+            data = response.content
+
+            if len(data) < MIN_FILE_SIZE:
+                return None
+
+            return data
+
+        except Exception as e:
+
+            logger.debug(
+                "Image download failed: %s",
+                e,
+            )
+
+            return None
+
+
+# ============================================================
+# TMDB SEARCH
+# ============================================================
+
+async def tmdb_search(
+    client,
+    endpoint,
+    title,
+):
+
+    if not TMDB_API_KEY:
+
+        logger.error(
+            "TMDB_API_KEY is missing"
+        )
+
+        return []
+
+    data = await get_json(
+        client,
+        f"{TMDB_URL}/{endpoint}",
+        params={
+            "api_key": TMDB_API_KEY,
+            "query": title,
+            "language": "en-US",
+            "include_adult": "false",
+            "page": 1,
+        },
+    )
+
+    if not data:
+        return []
+
+    return data.get(
+        "results",
+        [],
+    )
+
+
+# ============================================================
+# TMDB
+# ============================================================
+
+async def tmdb_images(
+    client,
+    title,
+):
+
+    result = []
+
+    searches = [
+        ("tv", "search/tv"),
+        ("movie", "search/movie"),
+    ]
+
+    for media_type, endpoint in searches:
+
+        results = await tmdb_search(
+            client,
+            endpoint,
+            title,
+        )
+
+        # Search only the best matching results.
+        for item in results[:5]:
+
+            item_id = item.get("id")
+
+            if not item_id:
+                continue
+
+            artwork = await get_json(
+                client,
+                f"{TMDB_URL}/"
+                f"{media_type}/"
+                f"{item_id}/images",
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "include_image_language":
+                        "en,null",
+                },
+            )
+
+            if not artwork:
+                continue
+
+            # Posters
+            for poster in artwork.get(
+                "posters",
+                [],
+            ):
+
+                path = poster.get(
+                    "file_path"
+                )
+
+                width = poster.get(
+                    "width",
+                    0,
+                )
+
+                height = poster.get(
+                    "height",
+                    0,
+                )
+
+                if (
+                    path
+                    and width >= 500
+                    and height >= 500
+                ):
+
+                    result.append(
+                        "https://image.tmdb.org"
+                        "/t/p/original"
+                        + path
+                    )
+
+            # Backdrops
+            for backdrop in artwork.get(
+                "backdrops",
+                [],
+            ):
+
+                path = backdrop.get(
+                    "file_path"
+                )
+
+                width = backdrop.get(
+                    "width",
+                    0,
+                )
+
+                height = backdrop.get(
+                    "height",
+                    0,
+                )
+
+                if (
+                    path
+                    and width >= 500
+                    and height >= 500
+                ):
+
+                    result.append(
+                        "https://image.tmdb.org"
+                        "/t/p/original"
+                        + path
+                    )
+
+    return unique_urls(result)
 
 
 # ============================================================
@@ -153,15 +406,17 @@ async def get_json(
 
 async def anilist_images(
     client,
-    name,
+    title,
 ):
 
     query = """
     query ($search: String!) {
+
         Media(
             search: $search,
             type: ANIME
         ) {
+
             id
 
             title {
@@ -172,13 +427,10 @@ async def anilist_images(
 
             coverImage {
                 extraLarge
+                large
             }
 
             bannerImage
-
-            trailer {
-                thumbnail
-            }
         }
     }
     """
@@ -186,15 +438,33 @@ async def anilist_images(
     data = await get_json(
         client,
         ANILIST_URL,
-        json_data={
-            "query": query,
-            "variables": {
-                "search": name,
-            },
-        },
     )
 
-    if not data:
+    # GraphQL requires POST, so use direct request here.
+    try:
+
+        response = await client.post(
+            ANILIST_URL,
+            json={
+                "query": query,
+                "variables": {
+                    "search": title,
+                },
+            },
+        )
+
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+
+    except Exception as e:
+
+        logger.warning(
+            "AniList failed: %s",
+            e,
+        )
+
         return []
 
     media = (
@@ -213,8 +483,9 @@ async def anilist_images(
         {},
     )
 
-    cover_url = cover.get(
-        "extraLarge"
+    cover_url = (
+        cover.get("extraLarge")
+        or cover.get("large")
     )
 
     if cover_url:
@@ -227,36 +498,23 @@ async def anilist_images(
     if banner:
         result.append(banner)
 
-    trailer = media.get(
-        "trailer"
-    )
-
-    if trailer:
-
-        thumbnail = trailer.get(
-            "thumbnail"
-        )
-
-        if thumbnail:
-            result.append(thumbnail)
-
-    return result
+    return unique_urls(result)
 
 
 # ============================================================
-# JIKAN / MYANIMELIST
+# JIKAN
 # ============================================================
 
 async def jikan_images(
     client,
-    name,
+    title,
 ):
 
     data = await get_json(
         client,
         f"{JIKAN_URL}/anime",
         params={
-            "q": name,
+            "q": title,
             "limit": 10,
             "sfw": "true",
         },
@@ -290,46 +548,32 @@ async def jikan_images(
         if url:
             result.append(url)
 
-        webp = images.get(
-            "webp",
+        trailer = anime.get(
+            "trailer",
             {},
         )
 
-        url = (
-            webp.get("large_image_url")
-            or webp.get("image_url")
+        trailer_images = trailer.get(
+            "images",
+            {},
         )
 
-        if url:
-            result.append(url)
-
-        trailer = anime.get(
-            "trailer"
+        trailer_url = (
+            trailer_images.get(
+                "maximum_image_url"
+            )
+            or trailer_images.get(
+                "large_image_url"
+            )
+            or trailer_images.get(
+                "medium_image_url"
+            )
         )
 
-        if trailer:
+        if trailer_url:
+            result.append(trailer_url)
 
-            trailer_images = trailer.get(
-                "images",
-                {},
-            )
-
-            trailer_url = (
-                trailer_images.get(
-                    "maximum_image_url"
-                )
-                or trailer_images.get(
-                    "large_image_url"
-                )
-                or trailer_images.get(
-                    "medium_image_url"
-                )
-            )
-
-            if trailer_url:
-                result.append(trailer_url)
-
-    return result
+    return unique_urls(result)
 
 
 # ============================================================
@@ -338,14 +582,14 @@ async def jikan_images(
 
 async def kitsu_images(
     client,
-    name,
+    title,
 ):
 
     data = await get_json(
         client,
         f"{KITSU_URL}/anime",
         params={
-            "filter[text]": name,
+            "filter[text]": title,
             "page[limit]": 10,
         },
     )
@@ -370,14 +614,14 @@ async def kitsu_images(
             {},
         )
 
-        url = (
+        poster_url = (
             poster.get("original")
             or poster.get("large")
             or poster.get("medium")
         )
 
-        if url:
-            result.append(url)
+        if poster_url:
+            result.append(poster_url)
 
         cover = attributes.get(
             "coverImage",
@@ -393,291 +637,7 @@ async def kitsu_images(
         if cover_url:
             result.append(cover_url)
 
-    return result
-
-
-# ============================================================
-# TMDB SEARCH
-# ============================================================
-
-async def tmdb_search(
-    client,
-    endpoint,
-    name,
-):
-
-    if not TMDB_API_KEY:
-        return []
-
-    return_data = await get_json(
-        client,
-        f"{TMDB_URL}/{endpoint}",
-        params={
-            "api_key": TMDB_API_KEY,
-            "query": name,
-            "language": "en-US",
-            "include_adult": "false",
-            "page": 1,
-        },
-    )
-
-    if not return_data:
-        return []
-
-    return return_data.get(
-        "results",
-        [],
-    )
-
-
-# ============================================================
-# TMDB IMAGES
-# ============================================================
-
-async def tmdb_images(
-    client,
-    name,
-):
-
-    if not TMDB_API_KEY:
-        return []
-
-    result = []
-
-    searches = [
-        ("tv", "search/tv"),
-        ("movie", "search/movie"),
-    ]
-
-    for media_type, endpoint in searches:
-
-        try:
-
-            results = await tmdb_search(
-                client,
-                endpoint,
-                name,
-            )
-
-            for item in results[:5]:
-
-                item_id = item.get("id")
-
-                if not item_id:
-                    continue
-
-                artwork = await get_json(
-                    client,
-                    f"{TMDB_URL}/{media_type}/"
-                    f"{item_id}/images",
-                    params={
-                        "api_key": TMDB_API_KEY,
-                        "include_image_language":
-                            "en,null",
-                    },
-                )
-
-                if not artwork:
-                    continue
-
-                # Posters
-
-                for poster in artwork.get(
-                    "posters",
-                    [],
-                ):
-
-                    path = poster.get(
-                        "file_path"
-                    )
-
-                    width = poster.get(
-                        "width",
-                        0,
-                    )
-
-                    height = poster.get(
-                        "height",
-                        0,
-                    )
-
-                    if (
-                        path
-                        and width >= 500
-                        and height >= 500
-                    ):
-
-                        result.append(
-                            "https://image.tmdb.org"
-                            "/t/p/original"
-                            + path
-                        )
-
-                # Backdrops
-
-                for backdrop in artwork.get(
-                    "backdrops",
-                    [],
-                ):
-
-                    path = backdrop.get(
-                        "file_path"
-                    )
-
-                    width = backdrop.get(
-                        "width",
-                        0,
-                    )
-
-                    height = backdrop.get(
-                        "height",
-                        0,
-                    )
-
-                    if (
-                        path
-                        and width >= 500
-                        and height >= 500
-                    ):
-
-                        result.append(
-                            "https://image.tmdb.org"
-                            "/t/p/original"
-                            + path
-                        )
-
-                # Logos
-
-                for logo in artwork.get(
-                    "logos",
-                    [],
-                ):
-
-                    path = logo.get(
-                        "file_path"
-                    )
-
-                    width = logo.get(
-                        "width",
-                        0,
-                    )
-
-                    if (
-                        path
-                        and width >= 300
-                    ):
-
-                        result.append(
-                            "https://image.tmdb.org"
-                            "/t/p/original"
-                            + path
-                        )
-
-        except Exception as e:
-
-            logger.warning(
-                "TMDB %s failed: %s",
-                media_type,
-                e,
-            )
-
-    return result
-
-
-# ============================================================
-# TMDB EPISODE STILLS
-# ============================================================
-
-async def tmdb_episode_images(
-    client,
-    name,
-):
-
-    if not TMDB_API_KEY:
-        return []
-
-    result = []
-
-    try:
-
-        results = await tmdb_search(
-            client,
-            "search/tv",
-            name,
-        )
-
-        for show in results[:2]:
-
-            tv_id = show.get("id")
-
-            if not tv_id:
-                continue
-
-            details = await get_json(
-                client,
-                f"{TMDB_URL}/tv/{tv_id}",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": "en-US",
-                },
-            )
-
-            if not details:
-                continue
-
-            seasons = details.get(
-                "seasons",
-                [],
-            )
-
-            for season in seasons[:5]:
-
-                season_number = season.get(
-                    "season_number"
-                )
-
-                if season_number is None:
-                    continue
-
-                season_data = await get_json(
-                    client,
-                    f"{TMDB_URL}/tv/"
-                    f"{tv_id}/season/"
-                    f"{season_number}",
-                    params={
-                        "api_key": TMDB_API_KEY,
-                        "language": "en-US",
-                    },
-                )
-
-                if not season_data:
-                    continue
-
-                for episode in season_data.get(
-                    "episodes",
-                    [],
-                ):
-
-                    still = episode.get(
-                        "still_path"
-                    )
-
-                    if still:
-
-                        result.append(
-                            "https://image.tmdb.org"
-                            "/t/p/original"
-                            + still
-                        )
-
-    except Exception as e:
-
-        logger.warning(
-            "TMDB episodes failed: %s",
-            e,
-        )
-
-    return result
+    return unique_urls(result)
 
 
 # ============================================================
@@ -686,100 +646,136 @@ async def tmdb_episode_images(
 
 async def fanart_images(
     client,
-    name,
+    title,
 ):
 
     if not FANART_API_KEY:
 
-        logger.info(
-            "Fanart.tv skipped - no API key"
+        logger.warning(
+            "FANART_API_KEY is not configured"
         )
+
+        return []
+
+    # First search TMDB to identify the show.
+    tmdb_results = await tmdb_search(
+        client,
+        "search/tv",
+        title,
+    )
+
+    if not tmdb_results:
 
         return []
 
     result = []
 
-    try:
+    # Fanart.tv normally works best with the
+    # show's TVDB ID. TMDB can expose external IDs.
+    for show in tmdb_results[:3]:
 
-        # Search TMDB first to obtain TV information.
+        tmdb_id = show.get("id")
 
-        results = await tmdb_search(
+        if not tmdb_id:
+            continue
+
+        external = await get_json(
             client,
-            "search/tv",
-            name,
+            f"{TMDB_URL}/tv/"
+            f"{tmdb_id}/external_ids",
+            params={
+                "api_key": TMDB_API_KEY,
+            },
         )
 
-        for show in results[:3]:
+        if not external:
+            continue
 
-            tv_id = show.get(
-                "id"
-            )
-
-            if not tv_id:
-                continue
-
-            external = await get_json(
-                client,
-                f"{TMDB_URL}/tv/"
-                f"{tv_id}/external_ids",
-                params={
-                    "api_key": TMDB_API_KEY,
-                },
-            )
-
-            if not external:
-                continue
-
-            tvdb_id = external.get(
-                "tvdb_id"
-            )
-
-            if not tvdb_id:
-                continue
-
-            data = await get_json(
-                client,
-                f"{FANART_URL}/tv/{tvdb_id}",
-                headers={
-                    "api-key": FANART_API_KEY,
-                },
-            )
-
-            if not data:
-                continue
-
-            image_groups = [
-                "tvposter",
-                "tvbanner",
-                "tvthumb",
-                "tvlogo",
-                "showbackground",
-                "clearart",
-                "clearlogo",
-            ]
-
-            for group in image_groups:
-
-                for image in data.get(
-                    group,
-                    [],
-                ):
-
-                    url = image.get(
-                        "url"
-                    )
-
-                    if url:
-                        result.append(url)
-
-    except Exception as e:
-
-        logger.warning(
-            "Fanart failed: %s",
-            e,
+        tvdb_id = external.get(
+            "tvdb_id"
         )
 
-    return result
+        if not tvdb_id:
+            continue
+
+        data = await get_json(
+            client,
+            f"{FANART_URL}/tv/"
+            f"{tvdb_id}",
+            headers={
+                "api-key": FANART_API_KEY,
+            },
+        )
+
+        if not data:
+            continue
+
+        # Posters
+        for item in data.get(
+            "tvposter",
+            [],
+        ):
+
+            url = item.get(
+                "url"
+            )
+
+            if url:
+                result.append(url)
+
+        # Backgrounds
+        for item in data.get(
+            "showbackground",
+            [],
+        ):
+
+            url = item.get(
+                "url"
+            )
+
+            if url:
+                result.append(url)
+
+        # HD backgrounds
+        for item in data.get(
+            "tvthumb",
+            [],
+        ):
+
+            url = item.get(
+                "url"
+            )
+
+            if url:
+                result.append(url)
+
+        # Season posters
+        for item in data.get(
+            "seasonposter",
+            [],
+        ):
+
+            url = item.get(
+                "url"
+            )
+
+            if url:
+                result.append(url)
+
+        # Clearart
+        for item in data.get(
+            "clearart",
+            [],
+        ):
+
+            url = item.get(
+                "url"
+            )
+
+            if url:
+                result.append(url)
+
+    return unique_urls(result)
 
 
 # ============================================================
@@ -788,31 +784,33 @@ async def fanart_images(
 
 async def animeplanet_images(
     client,
-    name,
+    title,
 ):
 
-    result = []
+    # Anime-Planet does not provide a simple public
+    # artwork API like TMDB/Kitsu.
+    #
+    # We use the search page and extract image URLs.
+    #
+    # This source can change its HTML structure, so
+    # failure here will simply return no results.
 
     try:
 
-        search_url = (
-            f"{ANIMEPLANET_URL}/anime/"
-            f"all?name={quote(name)}"
-        )
-
-        headers = {
-            "User-Agent":
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "Chrome/120 Safari/537.36",
-            "Accept":
-                "text/html,application/xhtml+xml",
-        }
-
         response = await client.get(
-            search_url,
-            headers=headers,
+            ANIMEPLANET_SEARCH,
+            params={
+                "q": title,
+            },
+            headers={
+                "User-Agent":
+                    "Mozilla/5.0 "
+                    "(Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "Chrome/120 Safari/537.36",
+                "Accept":
+                    "text/html,application/xhtml+xml",
+            },
         )
 
         if response.status_code != 200:
@@ -820,53 +818,51 @@ async def animeplanet_images(
 
         html = response.text
 
-        # Find og:image
+        result = []
 
-        matches = re.findall(
-            r'<meta[^>]+property=["\']og:image["\']'
-            r'[^>]+content=["\']([^"\']+)',
-            html,
-            flags=re.I,
-        )
+        # Extract image URLs from HTML.
+        patterns = [
+            r'https://[^"\']+\.(?:jpg|jpeg|png|webp)',
+            r'//[^"\']+\.(?:jpg|jpeg|png|webp)',
+        ]
 
-        for url in matches:
+        for pattern in patterns:
 
-            result.append(
-                urljoin(
-                    ANIMEPLANET_URL,
-                    url,
-                )
+            matches = re.findall(
+                pattern,
+                html,
+                flags=re.IGNORECASE,
             )
 
-        # Search common image attributes.
+            for url in matches:
 
-        image_matches = re.findall(
-            r'<img[^>]+(?:src|data-src)=["\']'
-            r'([^"\']+)',
-            html,
-            flags=re.I,
-        )
-
-        for url in image_matches:
-
-            if (
-                "anime-planet.com"
-                not in url
-                and url.startswith("//")
-            ):
-
-                url = "https:" + url
-
-            elif url.startswith("/"):
-
-                url = urljoin(
-                    ANIMEPLANET_URL,
-                    url,
-                )
-
-            if url.startswith("http"):
+                if url.startswith("//"):
+                    url = "https:" + url
 
                 result.append(url)
+
+        # Remove obvious tiny/icon assets.
+        filtered = []
+
+        for url in result:
+
+            low = url.lower()
+
+            if any(
+                x in low
+                for x in (
+                    "logo",
+                    "icon",
+                    "avatar",
+                    "sprite",
+                    "favicon",
+                )
+            ):
+                continue
+
+            filtered.append(url)
+
+        return unique_urls(filtered)
 
     except Exception as e:
 
@@ -875,99 +871,62 @@ async def animeplanet_images(
             e,
         )
 
-    return result
+        return []
 
 
 # ============================================================
-# CLEAN NAME
+# SOURCE SEARCH
 # ============================================================
 
-def clean_name(
-    name,
-):
-
-    name = re.sub(
-        r"\s+\d+$",
-        "",
-        name,
-    )
-
-    return name.strip()
-
-
-# ============================================================
-# UNIQUE URLS
-# ============================================================
-
-def unique_urls(
-    urls,
-):
-
-    result = []
-
-    seen = set()
-
-    for url in urls:
-
-        if not url:
-            continue
-
-        clean = (
-            url
-            .split("?")[0]
-            .strip()
-            .lower()
-        )
-
-        if clean in seen:
-            continue
-
-        seen.add(clean)
-
-        result.append(url)
-
-    return result
-
-
-# ============================================================
-# DOWNLOAD
-# ============================================================
-
-async def download_image(
+async def search_source(
     client,
-    url,
+    source,
+    title,
 ):
 
-    try:
+    if source == "tmdb":
 
-        response = await client.get(
-            url,
+        return await tmdb_images(
+            client,
+            title,
         )
 
-        if response.status_code != 200:
-            return None
+    if source == "fanart":
 
-        content_type = response.headers.get(
-            "content-type",
-            "",
-        ).lower()
-
-        if "image" not in content_type:
-            return None
-
-        if len(response.content) < MIN_FILE_SIZE:
-            return None
-
-        return response.content
-
-    except Exception as e:
-
-        logger.debug(
-            "Download failed: %s",
-            e,
+        return await fanart_images(
+            client,
+            title,
         )
 
-        return None
+    if source == "animeplanet":
+
+        return await animeplanet_images(
+            client,
+            title,
+        )
+
+    if source == "kitsu":
+
+        return await kitsu_images(
+            client,
+            title,
+        )
+
+    if source == "anilist":
+
+        return await anilist_images(
+            client,
+            title,
+        )
+
+    if source == "jikan":
+
+        return await jikan_images(
+            client,
+            title,
+        )
+
+    return []
 
 
 # ============================================================
@@ -975,223 +934,75 @@ async def download_image(
 # ============================================================
 
 def parse_img_command(
-    message,
+    message: Message,
 ):
 
-    command = message.command
+    command = message.command or []
 
     if len(command) < 2:
 
-        return (
-            None,
-            DEFAULT_LIMIT,
-            "all",
-        )
+        return None, None
 
-    args = command[1:]
-
-    source = "all"
-
-    # --------------------------------------------------------
-    # SOURCE
-    # --------------------------------------------------------
-
-    if args:
-
-        possible_source = (
-            args[0]
-            .lower()
-        )
-
-        if possible_source in SOURCE_ALIASES:
-
-            source = SOURCE_ALIASES[
-                possible_source
-            ]
-
-            args = args[1:]
-
-    # --------------------------------------------------------
-    # LIMIT
-    # --------------------------------------------------------
-
-    requested_limit = DEFAULT_LIMIT
-
-    if args:
-
-        if args[-1].isdigit():
-
-            requested_limit = int(
-                args[-1]
-            )
-
-            args = args[:-1]
-
-    requested_limit = max(
-        1,
-        min(
-            requested_limit,
-            MAX_ALLOWED_LIMIT,
-        ),
+    args = list(
+        command[1:]
     )
 
-    anime_name = " ".join(
-        args
-    ).strip()
+    source = DEFAULT_SOURCE
 
-    anime_name = clean_name(
-        anime_name
-    )
+    # ========================================================
+    # /img fanart Naruto
+    # /img tmdb Naruto
+    # ========================================================
 
-    return (
-        anime_name,
-        requested_limit,
-        source,
-    )
+    first = args[0].lower()
+
+    if first in SOURCES:
+
+        source = first
+
+        args = args[1:]
+
+    title = " ".join(args).strip()
+
+    title = clean_title(title)
+
+    if not title:
+
+        return source, None
+
+    return source, title
 
 
 # ============================================================
-# SOURCE HELP
+# USAGE MESSAGE
 # ============================================================
 
-def source_help():
+USAGE_TEXT = """
+<b>✦ /IMG USAGE</b>
 
-    return (
-        "✦ <b>/img command</b>\n\n"
+<b>Default:</b>
+<code>/img Naruto</code>
 
-        "<b>All sources:</b>\n"
-        "<code>/img Naruto</code>\n"
-        "<code>/img Naruto 50</code>\n\n"
+<b>TMDB:</b>
+<code>/img tmdb Naruto</code>
 
-        "<b>Specific source:</b>\n"
-        "<code>/img tmdb Naruto 30</code>\n"
-        "<code>/img anilist Naruto 30</code>\n"
-        "<code>/img mal Naruto 30</code>\n"
-        "<code>/img jikan Naruto 30</code>\n"
-        "<code>/img kitsu Naruto 30</code>\n"
-        "<code>/img fanart Naruto 30</code>\n"
-        "<code>/img animeplanet Naruto 30</code>\n\n"
+<b>Fanart:</b>
+<code>/img fanart Naruto</code>
 
-        "<b>Sources:</b>\n"
-        "• TMDB\n"
-        "• AniList\n"
-        "• MyAnimeList / Jikan\n"
-        "• Kitsu\n"
-        "• Fanart.tv\n"
-        "• Anime-Planet\n\n"
+<b>Anime-Planet:</b>
+<code>/img animeplanet Naruto</code>
 
-        "Maximum: <b>100 images</b>"
-    )
+<b>Kitsu:</b>
+<code>/img kitsu Naruto</code>
 
+<b>AniList:</b>
+<code>/img anilist Naruto</code>
 
-# ============================================================
-# SOURCE SEARCH
-# ============================================================
+<b>Jikan:</b>
+<code>/img jikan Naruto</code>
 
-async def get_source_images(
-    client,
-    source,
-    name,
-):
-
-    if source == "tmdb":
-
-        return await tmdb_images(
-            client,
-            name,
-        )
-
-    if source == "anilist":
-
-        return await anilist_images(
-            client,
-            name,
-        )
-
-    if source == "jikan":
-
-        return await jikan_images(
-            client,
-            name,
-        )
-
-    if source == "kitsu":
-
-        return await kitsu_images(
-            client,
-            name,
-        )
-
-    if source == "fanart":
-
-        return await fanart_images(
-            client,
-            name,
-        )
-
-    if source == "animeplanet":
-
-        return await animeplanet_images(
-            client,
-            name,
-        )
-
-    # --------------------------------------------------------
-    # ALL SOURCES
-    # --------------------------------------------------------
-
-    results = await asyncio.gather(
-
-        anilist_images(
-            client,
-            name,
-        ),
-
-        jikan_images(
-            client,
-            name,
-        ),
-
-        tmdb_images(
-            client,
-            name,
-        ),
-
-        kitsu_images(
-            client,
-            name,
-        ),
-
-        fanart_images(
-            client,
-            name,
-        ),
-
-        animeplanet_images(
-            client,
-            name,
-        ),
-
-        tmdb_episode_images(
-            client,
-            name,
-        ),
-
-        return_exceptions=True,
-    )
-
-    result = []
-
-    for item in results:
-
-        if isinstance(
-            item,
-            list,
-        ):
-
-            result.extend(item)
-
-    return result
+<i>Only one source is searched for each command.</i>
+"""
 
 
 # ============================================================
@@ -1200,7 +1011,8 @@ async def get_source_images(
 
 @Client.on_message(
     filters.command(
-        "img"
+        "img",
+        prefixes="/",
     )
 )
 async def image_command(
@@ -1208,33 +1020,29 @@ async def image_command(
     message: Message,
 ):
 
-    (
-        anime_name,
-        requested_limit,
-        source,
-    ) = parse_img_command(
+    source, title = parse_img_command(
         message
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # EMPTY COMMAND
-    # --------------------------------------------------------
+    # ========================================================
 
-    if not anime_name:
+    if not title:
 
         await message.reply_text(
-            source_help(),
-            disable_web_page_preview=True,
+            USAGE_TEXT,
+            parse_mode=enums.ParseMode.HTML,
         )
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOADING
-    # --------------------------------------------------------
+    # ========================================================
 
     loading = await message.reply_text(
-        "✦ sᴇᴀʀᴄʜɪɴɢ ʜᴅ ᴀʀᴛᴡᴏʀᴋ..."
+        f"✦ sᴇᴀʀᴄʜɪɴɢ {source.upper()} ᴀʀᴛᴡᴏʀᴋ...",
     )
 
     try:
@@ -1249,38 +1057,31 @@ async def image_command(
             max_keepalive_connections=10,
         )
 
-        headers = {
-            "User-Agent":
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "Chrome/120 Safari/537.36",
-        }
-
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             limits=limits,
-            headers=headers,
         ) as http:
 
-            # ------------------------------------------------
-            # SEARCH
-            # ------------------------------------------------
+            # =================================================
+            # IMPORTANT:
+            # ONLY ONE SOURCE
+            # =================================================
 
-            raw_urls = await get_source_images(
+            urls = await search_source(
                 http,
                 source,
-                anime_name,
+                title,
             )
 
             urls = unique_urls(
-                raw_urls
+                urls
             )
 
             logger.info(
-                "[IMG] %s returned %s unique URLs",
+                "[IMG] Source=%s | Title=%s | Found=%s",
                 source,
+                title,
                 len(urls),
             )
 
@@ -1288,40 +1089,53 @@ async def image_command(
 
                 await loading.edit_text(
                     "❌ ɴᴏ ᴀʀᴛᴡᴏʀᴋ ғᴏᴜɴᴅ.\n\n"
-                    "Try another source or title."
+                    "ᴛʀʏ ᴀɢᴀɪɴ ᴡɪᴛʜ ᴀ ᴅɪғғᴇʀᴇɴᴛ ᴛɪᴛʟᴇ "
+                    "ᴏʀ sᴏᴜʀᴄᴇ.",
                 )
 
                 return
 
-            # ------------------------------------------------
-            # HARD LIMIT BEFORE DOWNLOAD
-            # ------------------------------------------------
+            # =================================================
+            # STRICT LIMIT
+            # =================================================
 
-            urls = urls[
-                :requested_limit
-            ]
+            # /img has no number.
+            # MAX_IMAGES controls the maximum.
+            urls = urls[:MAX_IMAGES]
+
+            # =================================================
+            # DOWNLOAD
+            # =================================================
 
             await loading.edit_text(
-                f"✦ ғᴏᴜɴᴅ {len(urls)} ɪᴍᴀɢᴇs.\n"
-                f"✦ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ..."
+                f"✦ ᴅᴏᴡɴʟᴏᴀᴅɪɴɢ ɪᴍᴀɢᴇs...\n"
+                f"0/{len(urls)}",
             )
 
-            # ------------------------------------------------
-            # DOWNLOAD
-            # ------------------------------------------------
+            semaphore = asyncio.Semaphore(
+                DOWNLOAD_CONCURRENCY
+            )
 
-            download_tasks = [
-                download_image(
-                    http,
-                    url,
+            tasks = []
+
+            for url in urls:
+
+                tasks.append(
+                    download_image(
+                        http,
+                        url,
+                        semaphore,
+                    )
                 )
-                for url in urls
-            ]
 
             downloaded = await asyncio.gather(
-                *download_tasks,
+                *tasks,
                 return_exceptions=True,
             )
+
+            # =================================================
+            # KEEP ONLY VALID IMAGES
+            # =================================================
 
             photos = []
 
@@ -1336,62 +1150,63 @@ async def image_command(
                         data
                     )
 
-            # ------------------------------------------------
-            # HARD LIMIT AGAIN
-            # ------------------------------------------------
-
-            photos = photos[
-                :requested_limit
-            ]
-
             if not photos:
 
                 await loading.edit_text(
-                    "❌ ɪᴍᴀɢᴇs ᴄᴏᴜʟᴅ ɴᴏᴛ "
-                    "ʙᴇ ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ."
+                    "❌ ɪᴍᴀɢᴇs ᴄᴏᴜʟᴅ ɴᴏᴛ ʙᴇ "
+                    "ᴅᴏᴡɴʟᴏᴀᴅᴇᴅ.",
                 )
 
                 return
 
+            # =================================================
+            # HARD LIMIT AGAIN
+            # =================================================
+
+            # This prevents a source or future code change
+            # from ever sending more than MAX_IMAGES.
+            photos = photos[:MAX_IMAGES]
+
             total = len(photos)
 
             await loading.edit_text(
-                f"✦ ᴜᴘʟᴏᴀᴅɪɴɢ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ...\n"
-                f"0/{total}"
+                f"✦ ᴜᴘʟᴏᴀᴅɪɴɢ ɪᴍᴀɢᴇs...\n"
+                f"0/{total}",
             )
 
-            # ------------------------------------------------
-            # TELEGRAM UPLOAD
-            # ------------------------------------------------
+            # =================================================
+            # ALBUM UPLOAD
+            # =================================================
 
             uploaded = 0
 
             for start in range(
                 0,
                 total,
-                TELEGRAM_BATCH_SIZE,
+                ALBUM_SIZE,
             ):
 
                 batch = photos[
-                    start:
-                    start + TELEGRAM_BATCH_SIZE
+                    start:start + ALBUM_SIZE
                 ]
 
                 media = []
 
-                for data in batch:
+                for index, data in enumerate(
+                    batch
+                ):
 
                     bio = BytesIO(
                         data
                     )
 
                     bio.name = (
-                        "image.jpg"
+                        f"image_{start + index + 1}.jpg"
                     )
 
                     media.append(
                         InputMediaPhoto(
-                            bio
+                            media=bio
                         )
                     )
 
@@ -1406,14 +1221,25 @@ async def image_command(
                         batch
                     )
 
+                    # =================================================
+                    # PROGRESS MESSAGE
+                    # =================================================
+
+                    await loading.edit_text(
+                        f"✦ ᴜᴘʟᴏᴀᴅɪɴɢ ɪᴍᴀɢᴇs...\n"
+                        f"{uploaded}/{total}",
+                    )
+
                 except Exception as e:
 
                     logger.warning(
-                        "Media group failed: %s",
+                        "Album upload failed: %s",
                         e,
                     )
 
-                    # Individual fallback
+                    # Individual fallback.
+                    # This is only used if Telegram rejects
+                    # the album.
 
                     for data in batch:
 
@@ -1423,9 +1249,7 @@ async def image_command(
                                 data
                             )
 
-                            bio.name = (
-                                "image.jpg"
-                            )
+                            bio.name = "image.jpg"
 
                             await client.send_photo(
                                 chat_id=message.chat.id,
@@ -1434,61 +1258,33 @@ async def image_command(
 
                             uploaded += 1
 
-                        except Exception as upload_error:
+                        except Exception as photo_error:
 
                             logger.warning(
                                 "Individual upload failed: %s",
-                                upload_error,
+                                photo_error,
                             )
-
-                # ------------------------------------------------
-                # UPLOAD STATUS
-                # ------------------------------------------------
-
-                try:
-
-                    await loading.edit_text(
-                        f"✦ ᴜᴘʟᴏᴀᴅɪɴɢ ᴛᴏ ᴛᴇʟᴇɢʀᴀᴍ...\n"
-                        f"{uploaded}/{total}"
-                    )
-
-                except Exception:
-
-                    pass
 
                 await asyncio.sleep(
                     0.5
                 )
 
-            # ------------------------------------------------
+            # =================================================
             # FINISHED
-            # ------------------------------------------------
+            # =================================================
 
             try:
 
-                if uploaded >= total:
+                await loading.edit_text(
+                    f"✦ ᴅᴏɴᴇ\n"
+                    f"ᴜᴘʟᴏᴀᴅᴇᴅ: {uploaded}/{total}\n"
+                    f"sᴏᴜʀᴄᴇ: {source.upper()}",
+                )
 
-                    await loading.edit_text(
-                        f"✓ ᴜᴘʟᴏᴀᴅ ᴄᴏᴍᴘʟᴇᴛᴇ\n"
-                        f"{uploaded}/{total}"
-                    )
-
-                else:
-
-                    await loading.edit_text(
-                        f"✓ ᴜᴘʟᴏᴀᴅ ғɪɴɪsʜᴇᴅ\n"
-                        f"{uploaded}/{total}"
-                    )
-
-            except Exception:
-
-                pass
-
-            await asyncio.sleep(
-                2
-            )
-
-            try:
+                # Remove status message after a short delay.
+                await asyncio.sleep(
+                    2
+                )
 
                 await loading.delete()
 
@@ -1499,14 +1295,14 @@ async def image_command(
     except Exception as e:
 
         logger.exception(
-            "[IMG] Fatal error"
+            "[IMG] Fatal error",
         )
 
         try:
 
             await loading.edit_text(
                 "❌ ɪᴍᴀɢᴇ sᴇᴀʀᴄʜ ғᴀɪʟᴇᴅ.\n\n"
-                "ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
+                "ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.",
             )
 
         except Exception:
