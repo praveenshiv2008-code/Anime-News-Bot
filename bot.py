@@ -1,3 +1,4 @@
+import os
 import logging
 import asyncio
 
@@ -46,7 +47,7 @@ class AnimeBot(Client):
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
 
-            # Automatically load everything inside plugins/
+            # Load every .py file inside plugins/
             plugins={
                 "root": "plugins"
             }
@@ -54,6 +55,39 @@ class AnimeBot(Client):
 
         self.web_runner = None
         self.scheduler = None
+
+
+    # ========================================================
+    # SAFE RSS TASK
+    # ========================================================
+
+    async def safe_news_check(self):
+
+        try:
+
+            logger.info(
+                "📰 Starting first RSS news check..."
+            )
+
+            await broadcast_news(self)
+
+            logger.info(
+                "✅ First RSS news check completed"
+            )
+
+        except asyncio.CancelledError:
+
+            logger.info(
+                "🛑 RSS news task cancelled"
+            )
+
+            raise
+
+        except Exception:
+
+            logger.exception(
+                "❌ First RSS news check failed"
+            )
 
 
     # ========================================================
@@ -69,7 +103,15 @@ class AnimeBot(Client):
         await super().start()
 
         logger.info(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
+        logger.info(
             "✅ Pyrogram Client Started"
+        )
+
+        logger.info(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
 
@@ -83,27 +125,84 @@ class AnimeBot(Client):
 
             logger.info(
                 "🤖 Bot: @%s",
-                me.username
+                me.username or "unknown"
             )
 
-        except Exception as e:
+            logger.info(
+                "🆔 Bot ID: %s",
+                me.id
+            )
 
-            logger.warning(
-                "Could not get bot information: %s",
-                e
+        except Exception:
+
+            logger.exception(
+                "❌ Could not get bot information"
             )
 
 
-        # ----------------------------------------------------
+        # ====================================================
+        # CHECK PLUGINS DIRECTORY
+        # ====================================================
+
+        logger.info(
+            "🔌 Checking plugins directory..."
+        )
+
+        try:
+
+            plugins_dir = "plugins"
+
+            if not os.path.isdir(
+                plugins_dir
+            ):
+
+                logger.error(
+                    "❌ plugins/ directory does not exist!"
+                )
+
+            else:
+
+                plugin_files = sorted(
+                    filename
+                    for filename in os.listdir(
+                        plugins_dir
+                    )
+                    if (
+                        filename.endswith(".py")
+                        and filename != "__init__.py"
+                    )
+                )
+
+                if not plugin_files:
+
+                    logger.warning(
+                        "⚠️ No plugin files found!"
+                    )
+
+                else:
+
+                    logger.info(
+                        "📦 Found %s plugin file(s)",
+                        len(plugin_files)
+                    )
+
+                    for filename in plugin_files:
+
+                        logger.info(
+                            "   ├─ %s",
+                            filename
+                        )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Could not inspect plugins directory"
+            )
+
+
+        # ====================================================
         # RESTART NOTIFICATION
-        # ----------------------------------------------------
-        #
-        # Add this to Render environment variables:
-        #
-        # RESTART_LOG_CHAT=-100xxxxxxxxxx
-        #
-        # Leave empty if you don't want restart messages.
-        #
+        # ====================================================
 
         try:
 
@@ -123,11 +222,10 @@ class AnimeBot(Client):
                     "✅ Restart notification sent"
                 )
 
-        except Exception as e:
+        except Exception:
 
-            logger.warning(
-                "Could not send restart notification: %s",
-                e
+            logger.exception(
+                "⚠️ Could not send restart notification"
             )
 
 
@@ -135,88 +233,87 @@ class AnimeBot(Client):
         # SCHEDULER
         # ====================================================
 
-        self.scheduler = AsyncIOScheduler(
-            timezone=IST
-        )
+        try:
+
+            self.scheduler = AsyncIOScheduler(
+                timezone=IST
+            )
 
 
-        # ====================================================
-        # RSS NEWS JOB
-        # ====================================================
+            # ------------------------------------------------
+            # RSS NEWS JOB
+            # ------------------------------------------------
 
-        self.scheduler.add_job(
+            self.scheduler.add_job(
 
-            broadcast_news,
+                broadcast_news,
 
-            "interval",
+                "interval",
 
-            minutes=UPDATE_INTERVAL,
+                minutes=UPDATE_INTERVAL,
 
-            args=[self],
+                args=[self],
 
-            id="broadcast_job",
+                id="broadcast_job",
 
-            replace_existing=True,
+                replace_existing=True,
 
-            max_instances=1,
+                max_instances=1,
 
-            coalesce=True
+                coalesce=True
 
-        )
-
-
-        # ====================================================
-        # WEEKLY TOP 16
-        #
-        # EVERY SUNDAY
-        # 8:00 PM IST
-        # ====================================================
-
-        self.scheduler.add_job(
-
-            send_weekly_anime,
-
-            "cron",
-
-            day_of_week="sun",
-
-            hour=20,
-
-            minute=0,
-
-            second=0,
-
-            args=[self],
-
-            id="weekly_top16_anime",
-
-            replace_existing=True,
-
-            max_instances=1,
-
-            coalesce=True
-
-        )
+            )
 
 
-        # ====================================================
-        # START SCHEDULER
-        # ====================================================
+            # ------------------------------------------------
+            # WEEKLY TOP 16
+            # ------------------------------------------------
 
-        self.scheduler.start()
+            self.scheduler.add_job(
+
+                send_weekly_anime,
+
+                "cron",
+
+                day_of_week="sun",
+
+                hour=20,
+
+                minute=0,
+
+                second=0,
+
+                args=[self],
+
+                id="weekly_top16_anime",
+
+                replace_existing=True,
+
+                max_instances=1,
+
+                coalesce=True
+
+            )
 
 
-        logger.info(
-            "✅ RSS scheduler started — "
-            "checking every %s minute(s)",
-            UPDATE_INTERVAL
-        )
+            self.scheduler.start()
 
+            logger.info(
+                "✅ RSS scheduler started — "
+                "checking every %s minute(s)",
+                UPDATE_INTERVAL
+            )
 
-        logger.info(
-            "🏆 Weekly Top 16 Anime scheduled — "
-            "Every Sunday at 8:00 PM IST"
-        )
+            logger.info(
+                "🏆 Weekly Top 16 scheduled — "
+                "Every Sunday at 8:00 PM IST"
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Scheduler startup failed"
+            )
 
 
         # ====================================================
@@ -226,18 +323,17 @@ class AnimeBot(Client):
         try:
 
             asyncio.create_task(
-                broadcast_news(self)
+                self.safe_news_check()
             )
 
             logger.info(
                 "✅ First RSS broadcast task launched"
             )
 
-        except Exception as e:
+        except Exception:
 
-            logger.warning(
-                "Could not launch first RSS check: %s",
-                e
+            logger.exception(
+                "❌ Could not launch first RSS check"
             )
 
 
@@ -253,63 +349,60 @@ class AnimeBot(Client):
             )
 
 
-        app = web.Application()
+        try:
 
+            app = web.Application()
 
-        app.router.add_get(
-            "/",
-            health
-        )
-
-
-        app.router.add_get(
-            "/health",
-            health
-        )
-
-
-        # ----------------------------------------------------
-        # WEB RUNNER
-        # ----------------------------------------------------
-
-        self.web_runner = web.AppRunner(
-            app
-        )
-
-        await self.web_runner.setup()
-
-
-        # ----------------------------------------------------
-        # PORT
-        # ----------------------------------------------------
-
-        port = int(
-            globals().get(
-                "PORT",
-                10000
+            app.router.add_get(
+                "/",
+                health
             )
-        )
+
+            app.router.add_get(
+                "/health",
+                health
+            )
 
 
-        site = web.TCPSite(
+            self.web_runner = web.AppRunner(
+                app
+            )
 
-            self.web_runner,
-
-            "0.0.0.0",
-
-            port
-
-        )
+            await self.web_runner.setup()
 
 
-        await site.start()
+            port = int(
+                os.environ.get(
+                    "PORT",
+                    "10000"
+                )
+            )
 
 
-        logger.info(
-            "✅ Web server running on "
-            "0.0.0.0:%s",
-            port
-        )
+            site = web.TCPSite(
+
+                self.web_runner,
+
+                "0.0.0.0",
+
+                port
+
+            )
+
+            await site.start()
+
+
+            logger.info(
+                "✅ Web server running on "
+                "0.0.0.0:%s",
+                port
+            )
+
+        except Exception:
+
+            logger.exception(
+                "❌ Web server startup failed"
+            )
 
 
         # ====================================================
@@ -345,6 +438,10 @@ class AnimeBot(Client):
         )
 
         logger.info(
+            "🔌 Plugins        : LOADED"
+        )
+
+        logger.info(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
@@ -371,11 +468,10 @@ class AnimeBot(Client):
                     "🛑 Scheduler stopped"
                 )
 
-            except Exception as e:
+            except Exception:
 
-                logger.warning(
-                    "Scheduler shutdown error: %s",
-                    e
+                logger.exception(
+                    "⚠️ Scheduler shutdown error"
                 )
 
 
@@ -393,11 +489,10 @@ class AnimeBot(Client):
                     "🛑 Web server stopped"
                 )
 
-            except Exception as e:
+            except Exception:
 
-                logger.warning(
-                    "Web server shutdown error: %s",
-                    e
+                logger.exception(
+                    "⚠️ Web server shutdown error"
                 )
 
 
@@ -413,11 +508,10 @@ class AnimeBot(Client):
                 "🛑 Bot stopped"
             )
 
-        except Exception as e:
+        except Exception:
 
-            logger.warning(
-                "Pyrogram shutdown error: %s",
-                e
+            logger.exception(
+                "⚠️ Pyrogram shutdown error"
             )
 
 
@@ -429,7 +523,9 @@ if __name__ == "__main__":
 
     try:
 
-        AnimeBot().run()
+        bot = AnimeBot()
+
+        bot.run()
 
     except KeyboardInterrupt:
 
@@ -437,9 +533,8 @@ if __name__ == "__main__":
             "🛑 Bot stopped manually"
         )
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
-            "❌ Fatal bot error: %s",
-            e
+            "❌ Fatal bot error"
         )
