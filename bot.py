@@ -1,6 +1,9 @@
 import os
-import logging
+import sys
 import asyncio
+import logging
+import importlib
+import traceback
 
 from zoneinfo import ZoneInfo
 
@@ -33,6 +36,184 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 # ============================================================
+# PLUGINS
+# ============================================================
+
+PLUGIN_LIST = [
+    "plugins.admin",
+    "plugins.anime",
+    "plugins.help",
+    "plugins.img",
+    "plugins.start",
+    "plugins.trending",
+    "plugins.weekly",
+]
+
+
+# ============================================================
+# PLUGIN LOADER
+# ============================================================
+
+def load_plugins():
+    """
+    Load every plugin separately.
+
+    If one plugin fails, the remaining plugins continue loading.
+
+    The complete traceback of a failed plugin is printed so the
+    exact import/dependency error can be seen in Render logs.
+    """
+
+    logger.info("")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("🔌 STARTING PLUGIN LOADER")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    loaded = []
+    failed = []
+
+    for plugin_name in PLUGIN_LIST:
+
+        filename = plugin_name.replace(
+            "plugins.",
+            ""
+        )
+
+        logger.info("")
+        logger.info(
+            "🔍 Loading plugin: %s",
+            filename
+        )
+
+        try:
+
+            # ------------------------------------------------
+            # If previously imported, reload it.
+            # ------------------------------------------------
+
+            if plugin_name in sys.modules:
+
+                importlib.reload(
+                    sys.modules[plugin_name]
+                )
+
+            else:
+
+                importlib.import_module(
+                    plugin_name
+                )
+
+            loaded.append(
+                plugin_name
+            )
+
+            logger.info(
+                "✅ Plugin loaded successfully: %s",
+                filename
+            )
+
+        except Exception as e:
+
+            failed.append(
+                (
+                    plugin_name,
+                    e
+                )
+            )
+
+            logger.error(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+
+            logger.error(
+                "❌ PLUGIN FAILED: %s",
+                filename
+            )
+
+            logger.error(
+                "❌ ERROR TYPE: %s",
+                type(e).__name__
+            )
+
+            logger.error(
+                "❌ ERROR: %s",
+                str(e)
+            )
+
+            logger.error(
+                "❌ FULL TRACEBACK:"
+            )
+
+            traceback.print_exc()
+
+            logger.error(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    logger.info("")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("📦 PLUGIN LOADING SUMMARY")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    logger.info(
+        "✅ Loaded: %s / %s",
+        len(loaded),
+        len(PLUGIN_LIST)
+    )
+
+    for plugin_name in loaded:
+
+        logger.info(
+            "   ✅ %s",
+            plugin_name
+        )
+
+    if failed:
+
+        logger.info("")
+
+        logger.error(
+            "❌ Failed: %s / %s",
+            len(failed),
+            len(PLUGIN_LIST)
+        )
+
+        for plugin_name, error in failed:
+
+            logger.error(
+                "   ❌ %s → %s: %s",
+                plugin_name,
+                type(error).__name__,
+                str(error)
+            )
+
+    else:
+
+        logger.info("")
+        logger.info(
+            "🎉 ALL 7 PLUGINS LOADED SUCCESSFULLY"
+        )
+
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    logger.info("")
+
+    return loaded, failed
+
+
+# ============================================================
+# LOAD PLUGINS BEFORE BOT STARTS
+# ============================================================
+
+LOADED_PLUGINS, FAILED_PLUGINS = load_plugins()
+
+
+# ============================================================
 # BOT
 # ============================================================
 
@@ -40,25 +221,32 @@ class AnimeBot(Client):
 
     def __init__(self):
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # No:
+        #
+        # plugins={"root": "plugins"}
+        #
+        # because plugins are loaded manually above.
+        # ----------------------------------------------------
+
         super().__init__(
             name="anime_session",
 
             api_id=API_ID,
             api_hash=API_HASH,
-            bot_token=BOT_TOKEN,
 
-            # Load every .py file inside plugins/
-            plugins={
-                "root": "plugins"
-            }
+            bot_token=BOT_TOKEN,
         )
 
         self.web_runner = None
         self.scheduler = None
+        self.news_task = None
 
 
     # ========================================================
-    # SAFE RSS TASK
+    # SAFE NEWS CHECK
     # ========================================================
 
     async def safe_news_check(self):
@@ -69,7 +257,9 @@ class AnimeBot(Client):
                 "📰 Starting first RSS news check..."
             )
 
-            await broadcast_news(self)
+            await broadcast_news(
+                self
+            )
 
             logger.info(
                 "✅ First RSS news check completed"
@@ -103,7 +293,7 @@ class AnimeBot(Client):
         await super().start()
 
         logger.info(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
         logger.info(
@@ -111,13 +301,13 @@ class AnimeBot(Client):
         )
 
         logger.info(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # BOT INFORMATION
-        # ----------------------------------------------------
+        # ====================================================
 
         try:
 
@@ -141,63 +331,35 @@ class AnimeBot(Client):
 
 
         # ====================================================
-        # CHECK PLUGINS DIRECTORY
+        # PLUGIN STATUS
         # ====================================================
 
+        logger.info("")
+
         logger.info(
-            "🔌 Checking plugins directory..."
+            "🔌 Registered plugin status:"
         )
 
-        try:
+        for plugin_name in PLUGIN_LIST:
 
-            plugins_dir = "plugins"
+            short_name = plugin_name.replace(
+                "plugins.",
+                ""
+            )
 
-            if not os.path.isdir(
-                plugins_dir
-            ):
+            if plugin_name in LOADED_PLUGINS:
 
-                logger.error(
-                    "❌ plugins/ directory does not exist!"
+                logger.info(
+                    "   🟢 %s",
+                    short_name
                 )
 
             else:
 
-                plugin_files = sorted(
-                    filename
-                    for filename in os.listdir(
-                        plugins_dir
-                    )
-                    if (
-                        filename.endswith(".py")
-                        and filename != "__init__.py"
-                    )
+                logger.error(
+                    "   🔴 %s",
+                    short_name
                 )
-
-                if not plugin_files:
-
-                    logger.warning(
-                        "⚠️ No plugin files found!"
-                    )
-
-                else:
-
-                    logger.info(
-                        "📦 Found %s plugin file(s)",
-                        len(plugin_files)
-                    )
-
-                    for filename in plugin_files:
-
-                        logger.info(
-                            "   ├─ %s",
-                            filename
-                        )
-
-        except Exception:
-
-            logger.exception(
-                "❌ Could not inspect plugins directory"
-            )
 
 
         # ====================================================
@@ -241,7 +403,7 @@ class AnimeBot(Client):
 
 
             # ------------------------------------------------
-            # RSS NEWS JOB
+            # RSS NEWS
             # ------------------------------------------------
 
             self.scheduler.add_job(
@@ -260,7 +422,7 @@ class AnimeBot(Client):
 
                 max_instances=1,
 
-                coalesce=True
+                coalesce=True,
 
             )
 
@@ -291,7 +453,7 @@ class AnimeBot(Client):
 
                 max_instances=1,
 
-                coalesce=True
+                coalesce=True,
 
             )
 
@@ -300,13 +462,13 @@ class AnimeBot(Client):
 
             logger.info(
                 "✅ RSS scheduler started — "
-                "checking every %s minute(s)",
+                "every %s minute(s)",
                 UPDATE_INTERVAL
             )
 
             logger.info(
                 "🏆 Weekly Top 16 scheduled — "
-                "Every Sunday at 8:00 PM IST"
+                "Sunday 8:00 PM IST"
             )
 
         except Exception:
@@ -322,7 +484,7 @@ class AnimeBot(Client):
 
         try:
 
-            asyncio.create_task(
+            self.news_task = asyncio.create_task(
                 self.safe_news_check()
             )
 
@@ -353,6 +515,7 @@ class AnimeBot(Client):
 
             app = web.Application()
 
+
             app.router.add_get(
                 "/",
                 health
@@ -370,6 +533,10 @@ class AnimeBot(Client):
 
             await self.web_runner.setup()
 
+
+            # ------------------------------------------------
+            # Render PORT
+            # ------------------------------------------------
 
             port = int(
                 os.environ.get(
@@ -406,11 +573,12 @@ class AnimeBot(Client):
 
 
         # ====================================================
-        # READY
+        # FINAL STATUS
         # ====================================================
 
+        logger.info("")
         logger.info(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
         logger.info(
@@ -438,12 +606,32 @@ class AnimeBot(Client):
         )
 
         logger.info(
-            "🔌 Plugins        : LOADED"
+            "🔌 Plugins        : %s / %s",
+            len(LOADED_PLUGINS),
+            len(PLUGIN_LIST)
         )
 
+        if FAILED_PLUGINS:
+
+            logger.error(
+                "⚠️ Some plugins failed to load!"
+            )
+
+            logger.error(
+                "Check the PLUGIN FAILED traceback above."
+            )
+
+        else:
+
+            logger.info(
+                "✅ ALL PLUGINS READY"
+            )
+
         logger.info(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
+
+        logger.info("")
 
 
     # ========================================================
@@ -451,6 +639,37 @@ class AnimeBot(Client):
     # ========================================================
 
     async def stop(self, *args):
+
+        # ----------------------------------------------------
+        # CANCEL NEWS TASK
+        # ----------------------------------------------------
+
+        if self.news_task:
+
+            try:
+
+                if not self.news_task.done():
+
+                    self.news_task.cancel()
+
+                    try:
+
+                        await self.news_task
+
+                    except asyncio.CancelledError:
+
+                        pass
+
+                logger.info(
+                    "🛑 First RSS task stopped"
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "⚠️ RSS task shutdown error"
+                )
+
 
         # ----------------------------------------------------
         # STOP SCHEDULER
@@ -523,6 +742,11 @@ if __name__ == "__main__":
 
     try:
 
+        logger.info("")
+        logger.info(
+            "🚀 Starting Anime News Bot..."
+        )
+
         bot = AnimeBot()
 
         bot.run()
@@ -536,5 +760,5 @@ if __name__ == "__main__":
     except Exception:
 
         logger.exception(
-            "❌ Fatal bot error"
+            "❌ FATAL BOT ERROR"
         )
