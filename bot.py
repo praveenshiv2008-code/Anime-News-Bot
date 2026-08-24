@@ -7,7 +7,14 @@ import traceback
 
 from zoneinfo import ZoneInfo
 
-from pyrogram import Client
+from pyrogram import Client, filters
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
+from pyrogram.enums import ParseMode
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiohttp import web
 
@@ -37,6 +44,10 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # ============================================================
 # PLUGINS
+#
+# IMPORTANT:
+# plugins.start has been removed.
+# /start is registered directly in this file.
 # ============================================================
 
 PLUGIN_LIST = [
@@ -44,10 +55,134 @@ PLUGIN_LIST = [
     "plugins.anime",
     "plugins.help",
     "plugins.img",
-    "plugins.start",
     "plugins.trending",
     "plugins.weekly",
 ]
+
+
+# ============================================================
+# DIRECT /START COMMAND
+# ============================================================
+
+@Client.on_message(
+    filters.command("start") & filters.private
+)
+async def direct_start(
+    client: Client,
+    message: Message
+):
+
+    user = message.from_user
+
+    if not user:
+        return
+
+    mention = user.mention
+    user_id = user.id
+
+    # --------------------------------------------------------
+    # CREATE START MESSAGE
+    # --------------------------------------------------------
+
+    try:
+
+        text = START_MSG.format(
+            first=user.first_name or "",
+            last=user.last_name or "",
+            username=(
+                f"@{user.username}"
+                if user.username
+                else "None"
+            ),
+            mention=mention,
+            id=user_id
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "START_MSG formatting failed: %s",
+            e
+        )
+
+        text = (
+            f"ʜᴇʟʟᴏ {mention}! 👋\n\n"
+            "ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ ᴛʜᴇ ᴀɴɪᴍᴇ ɴᴇᴡs ʙᴏᴛ.\n\n"
+            "ᴜsᴇ /help ᴛᴏ sᴇᴇ ᴍʏ ᴄᴏᴍᴍᴀɴᴅs."
+        )
+
+    # --------------------------------------------------------
+    # BUTTONS
+    # --------------------------------------------------------
+
+    buttons = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "• ᴀʙᴏᴜᴛ",
+                    callback_data="about"
+                ),
+                InlineKeyboardButton(
+                    "ʜᴇʟᴘ •",
+                    callback_data="help"
+                )
+            ]
+        ]
+    )
+
+    # --------------------------------------------------------
+    # TRY PHOTO
+    # --------------------------------------------------------
+
+    if START_PIC:
+
+        try:
+
+            await message.reply_photo(
+                photo=START_PIC,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=buttons
+            )
+
+            logger.info(
+                "✅ /start photo sent to %s",
+                user_id
+            )
+
+            return
+
+        except Exception as e:
+
+            logger.warning(
+                "⚠️ START_PIC failed: %s",
+                e
+            )
+
+    # --------------------------------------------------------
+    # TEXT FALLBACK
+    # --------------------------------------------------------
+
+    try:
+
+        await message.reply_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=buttons,
+            disable_web_page_preview=True
+        )
+
+        logger.info(
+            "✅ /start text sent to %s",
+            user_id
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "❌ /start completely failed: %s",
+            e
+        )
 
 
 # ============================================================
@@ -57,9 +192,15 @@ PLUGIN_LIST = [
 def load_plugins():
 
     logger.info("")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    logger.info("🔌 STARTING PLUGIN LOADER")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    logger.info(
+        "🔌 STARTING PLUGIN LOADER"
+    )
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
 
     loaded = []
     failed = []
@@ -91,10 +232,12 @@ def load_plugins():
                     plugin_name
                 )
 
-            loaded.append(plugin_name)
+            loaded.append(
+                plugin_name
+            )
 
             logger.info(
-                "✅ Plugin loaded successfully: %s",
+                "✅ Plugin loaded: %s",
                 filename
             )
 
@@ -136,10 +279,22 @@ def load_plugins():
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
 
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
     logger.info("")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    logger.info("📦 PLUGIN LOADING SUMMARY")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    logger.info(
+        "📦 PLUGIN LOADING SUMMARY"
+    )
+
+    logger.info(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
 
     logger.info(
         "✅ Loaded: %s / %s",
@@ -150,14 +305,13 @@ def load_plugins():
     for plugin_name in loaded:
 
         logger.info(
-            "   ✅ %s",
+            "   🟢 %s",
             plugin_name
         )
 
     if failed:
 
-        logger.info("")
-
+        logger.error("")
         logger.error(
             "❌ Failed: %s / %s",
             len(failed),
@@ -167,7 +321,7 @@ def load_plugins():
         for plugin_name, error in failed:
 
             logger.error(
-                "   ❌ %s → %s: %s",
+                "   🔴 %s → %s: %s",
                 plugin_name,
                 type(error).__name__,
                 str(error)
@@ -177,7 +331,7 @@ def load_plugins():
 
         logger.info("")
         logger.info(
-            "🎉 ALL 7 PLUGINS LOADED SUCCESSFULLY"
+            "🎉 ALL PLUGINS LOADED SUCCESSFULLY"
         )
 
     logger.info(
@@ -195,7 +349,7 @@ LOADED_PLUGINS, FAILED_PLUGINS = load_plugins()
 
 
 # ============================================================
-# BOT
+# BOT CLASS
 # ============================================================
 
 class AnimeBot(Client):
@@ -206,7 +360,7 @@ class AnimeBot(Client):
             name="anime_session",
             api_id=API_ID,
             api_hash=API_HASH,
-            bot_token=BOT_TOKEN,
+            bot_token=BOT_TOKEN
         )
 
         self.web_runner = None
@@ -214,7 +368,7 @@ class AnimeBot(Client):
         self.news_task = None
 
     # ========================================================
-    # SAFE NEWS CHECK
+    # NEWS CHECK
     # ========================================================
 
     async def safe_news_check(self):
@@ -222,19 +376,21 @@ class AnimeBot(Client):
         try:
 
             logger.info(
-                "📰 Starting first RSS news check..."
+                "📰 Starting RSS news check..."
             )
 
-            await broadcast_news(self)
+            await broadcast_news(
+                self
+            )
 
             logger.info(
-                "✅ First RSS news check completed"
+                "✅ RSS news check completed"
             )
 
         except asyncio.CancelledError:
 
             logger.info(
-                "🛑 RSS news task cancelled"
+                "🛑 RSS task cancelled"
             )
 
             raise
@@ -242,23 +398,24 @@ class AnimeBot(Client):
         except Exception:
 
             logger.exception(
-                "❌ First RSS news check failed"
+                "❌ RSS news check failed"
             )
 
     # ========================================================
-    # START
+    # START BOT
     # ========================================================
 
     async def start(self):
 
         await super().start()
 
+        logger.info("")
         logger.info(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
         logger.info(
-            "✅ Pyrogram Client Started"
+            "✅ PYROGRAM CLIENT STARTED"
         )
 
         logger.info(
@@ -266,7 +423,7 @@ class AnimeBot(Client):
         )
 
         # ----------------------------------------------------
-        # BOT INFORMATION
+        # BOT INFO
         # ----------------------------------------------------
 
         try:
@@ -286,7 +443,7 @@ class AnimeBot(Client):
         except Exception:
 
             logger.exception(
-                "❌ Could not get bot information"
+                "❌ Failed to get bot information"
             )
 
         # ----------------------------------------------------
@@ -295,7 +452,7 @@ class AnimeBot(Client):
 
         logger.info("")
         logger.info(
-            "🔌 Registered plugin status:"
+            "🔌 PLUGIN STATUS:"
         )
 
         for plugin_name in PLUGIN_LIST:
@@ -320,27 +477,30 @@ class AnimeBot(Client):
                 )
 
         # ----------------------------------------------------
-        # RESTART NOTIFICATION
+        # START STATUS
         # ----------------------------------------------------
+
+        logger.info(
+            "   🟢 start (direct handler)"
+        )
+
+        # ====================================================
+        # RESTART LOG
+        # ====================================================
 
         try:
 
-            restart_chat = globals().get(
-                "RESTART_LOG_CHAT",
-                ""
-            )
-
-            if restart_chat:
+            if RESTART_LOG_CHAT:
 
                 await self.send_message(
-                    chat_id=restart_chat,
+                    chat_id=RESTART_LOG_CHAT,
                     text="✦ ʙᴏᴛ ʀᴇsᴛᴀʀᴛᴇᴅ ✓"
                 )
 
         except Exception:
 
             logger.exception(
-                "⚠️ Could not send restart notification"
+                "⚠️ Restart log failed"
             )
 
         # ====================================================
@@ -353,7 +513,10 @@ class AnimeBot(Client):
                 timezone=IST
             )
 
+            # ------------------------------------------------
             # RSS NEWS
+            # ------------------------------------------------
+
             self.scheduler.add_job(
                 broadcast_news,
                 "interval",
@@ -362,10 +525,13 @@ class AnimeBot(Client):
                 id="broadcast_job",
                 replace_existing=True,
                 max_instances=1,
-                coalesce=True,
+                coalesce=True
             )
 
+            # ------------------------------------------------
             # WEEKLY TOP 16
+            # ------------------------------------------------
+
             self.scheduler.add_job(
                 send_weekly_anime,
                 "cron",
@@ -377,18 +543,18 @@ class AnimeBot(Client):
                 id="weekly_top16_anime",
                 replace_existing=True,
                 max_instances=1,
-                coalesce=True,
+                coalesce=True
             )
 
             self.scheduler.start()
 
             logger.info(
-                "✅ RSS scheduler started — every %s minute(s)",
+                "✅ RSS scheduler: every %s minute(s)",
                 UPDATE_INTERVAL
             )
 
             logger.info(
-                "🏆 Weekly Top 16 scheduled — Sunday 8:00 PM IST"
+                "🏆 Weekly Top 16: Sunday 8:00 PM IST"
             )
 
         except Exception:
@@ -398,7 +564,7 @@ class AnimeBot(Client):
             )
 
         # ====================================================
-        # FIRST RSS CHECK
+        # FIRST NEWS CHECK
         # ====================================================
 
         try:
@@ -408,17 +574,17 @@ class AnimeBot(Client):
             )
 
             logger.info(
-                "✅ First RSS broadcast task launched"
+                "✅ First RSS task launched"
             )
 
         except Exception:
 
             logger.exception(
-                "❌ Could not launch first RSS check"
+                "❌ Could not launch RSS task"
             )
 
         # ====================================================
-        # RENDER HEALTH SERVER
+        # RENDER WEB SERVER
         # ====================================================
 
         async def health(request):
@@ -451,7 +617,7 @@ class AnimeBot(Client):
             port = int(
                 os.environ.get(
                     "PORT",
-                    "10000"
+                    str(PORT)
                 )
             )
 
@@ -464,14 +630,14 @@ class AnimeBot(Client):
             await site.start()
 
             logger.info(
-                "✅ Web server running on 0.0.0.0:%s",
+                "✅ Health server: 0.0.0.0:%s",
                 port
             )
 
         except Exception:
 
             logger.exception(
-                "❌ Web server startup failed"
+                "❌ Health server failed"
             )
 
         # ====================================================
@@ -488,35 +654,43 @@ class AnimeBot(Client):
         )
 
         logger.info(
-            "📡 RSS News       : ONLINE"
+            "📡 RSS News      : ONLINE"
         )
 
         logger.info(
-            "🏆 Weekly Top 16  : ONLINE"
+            "🏆 Weekly Top 16 : ONLINE"
         )
 
         logger.info(
-            "🔎 Anime Search   : ONLINE"
+            "🔎 Anime Search  : ONLINE"
         )
 
         logger.info(
-            "🖼 HD Images      : ONLINE"
+            "🖼 HD Images     : ONLINE"
         )
 
         logger.info(
-            "🔥 Trending       : ONLINE"
+            "🔥 Trending      : ONLINE"
         )
 
         logger.info(
-            "🔌 Plugins        : %s / %s",
+            "▶ /start        : ONLINE"
+        )
+
+        logger.info(
+            "▶ /help         : PLUGIN"
+        )
+
+        logger.info(
+            "🔌 Plugins       : %s / %s",
             len(LOADED_PLUGINS),
             len(PLUGIN_LIST)
         )
 
         if FAILED_PLUGINS:
 
-            logger.error(
-                "⚠️ Some plugins failed to load!"
+            logger.warning(
+                "⚠️ Some plugins failed."
             )
 
         else:
@@ -536,7 +710,7 @@ class AnimeBot(Client):
     async def stop(self, *args):
 
         # ----------------------------------------------------
-        # CANCEL NEWS TASK
+        # RSS TASK
         # ----------------------------------------------------
 
         if self.news_task:
@@ -562,7 +736,7 @@ class AnimeBot(Client):
                 )
 
         # ----------------------------------------------------
-        # STOP SCHEDULER
+        # SCHEDULER
         # ----------------------------------------------------
 
         if self.scheduler:
@@ -580,7 +754,7 @@ class AnimeBot(Client):
                 )
 
         # ----------------------------------------------------
-        # STOP WEB SERVER
+        # WEB SERVER
         # ----------------------------------------------------
 
         if self.web_runner:
@@ -596,7 +770,7 @@ class AnimeBot(Client):
                 )
 
         # ----------------------------------------------------
-        # STOP PYROGRAM
+        # PYROGRAM
         # ----------------------------------------------------
 
         try:
@@ -611,16 +785,16 @@ class AnimeBot(Client):
 
 
 # ============================================================
-# RUN
+# MAIN
 # ============================================================
 
 if __name__ == "__main__":
 
-    try:
+    logger.info(
+        "🚀 Starting Anime News Bot..."
+    )
 
-        logger.info(
-            "🚀 Starting Anime News Bot..."
-        )
+    try:
 
         bot = AnimeBot()
 
