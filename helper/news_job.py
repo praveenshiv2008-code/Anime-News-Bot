@@ -31,6 +31,7 @@ def small_caps(text):
     """
     Convert normal English letters to Unicode small caps.
     """
+
     if not text:
         return ""
 
@@ -43,7 +44,7 @@ def small_caps(text):
 
 def clean_text(text):
     """
-    Clean and safely prepare RSS/news text for Telegram HTML.
+    Clean news text and escape HTML characters.
     """
 
     if not text:
@@ -51,45 +52,64 @@ def clean_text(text):
 
     text = str(text).strip()
 
-    # Escape HTML characters so article text cannot break
-    # Telegram's HTML formatting.
-    text = html.escape(text, quote=False)
+    # Remove excessive spaces/newlines.
+    text = " ".join(text.split())
+
+    # Escape HTML so article text cannot break Telegram markup.
+    text = html.escape(
+        text,
+        quote=False
+    )
 
     return text
 
 
 # ============================================================
-# SHORT SUMMARY
+# PREPARE SUMMARY
 # ============================================================
 
 def prepare_summary(summary):
     """
-    Keep the news description short and clean.
+    Prepare a short news summary.
     """
 
     if not summary:
+
         return (
-            "ᴛʜᴇ ᴏғғɪᴄɪᴀʟ ᴀɴɴᴏᴜɴᴄᴇᴍᴇɴᴛ ᴄᴏɴғɪʀᴍs "
-            "ɴᴇᴡ ɪɴғᴏʀᴍᴀᴛɪᴏɴ ᴀʙᴏᴜᴛ ᴛʜᴇ ᴀɴɪᴍᴇ."
+            "ᴛʜᴇ ᴏғғɪᴄɪᴀʟ ᴀɴɴᴏᴜɴᴄᴇᴍᴇɴᴛ "
+            "ᴄᴏɴғɪʀᴍs ɴᴇᴡ ɪɴғᴏʀᴍᴀᴛɪᴏɴ "
+            "ᴀʙᴏᴜᴛ ᴛʜᴇ ᴀɴɪᴍᴇ."
         )
 
-    # Remove excessive spaces/newlines.
-    summary = " ".join(str(summary).split())
+    summary = " ".join(
+        str(summary).split()
+    )
 
-    # Keep captions reasonably sized.
+    # Keep the caption clean.
     if len(summary) > 320:
-        summary = summary[:320].rsplit(" ", 1)[0] + "..."
 
-    return small_caps(summary)
+        summary = (
+            summary[:320]
+            .rsplit(" ", 1)[0]
+            + "..."
+        )
+
+    summary = small_caps(
+        summary
+    )
+
+    return clean_text(
+        summary
+    )
 
 
 # ============================================================
-# CHANNEL ID
+# RESOLVE CHAT ID
 # ============================================================
 
 def resolve_chat_id(channel):
     """
-    Convert numeric channel IDs to int.
+    Convert numeric channel IDs to integers.
     Keep @username as string.
     """
 
@@ -104,14 +124,14 @@ def resolve_chat_id(channel):
 
 
 # ============================================================
-# NEWS CAPTION
+# CREATE NEWS CAPTION
 # ============================================================
 
 def create_caption(item):
     """
-    Creates the exact requested format.
+    Creates the requested Anime News format.
 
-    Example:
+    Final layout:
 
     ╭━━━━━「 ɪɴꜰᴏ 」━━━━━╮
 
@@ -120,11 +140,8 @@ def create_caption(item):
     「 ᴀɴɪᴍᴇ ᴛɪᴛʟᴇ 」
 
     <blockquote>
-    ᴛʜᴇ ᴏғғɪᴄɪᴀʟ...
+    ɴᴇᴡs sᴜᴍᴍᴀʀʏ
     </blockquote>
-
-    📅 ʀᴇʟᴇᴀsᴇ: ᴛʙᴀ
-    🎬 sᴛᴜᴅɪᴏ: ᴛʙᴀ
 
     ╰━━━━━━━━━━━━━━╯
 
@@ -135,32 +152,41 @@ def create_caption(item):
     # TITLE
     # --------------------------------------------------------
 
-    title = getattr(item, "title", None)
+    title = getattr(
+        item,
+        "title",
+        None
+    )
 
     if not title:
         title = "Anime News"
 
     title = str(title).strip()
 
-    title = small_caps(title)
+    title = small_caps(
+        title
+    )
 
-    title = html.escape(
-        title,
-        quote=False
+    title = clean_text(
+        title
     )
 
     # --------------------------------------------------------
     # SUMMARY
     # --------------------------------------------------------
 
-    summary = getattr(item, "summary", None)
+    summary = getattr(
+        item,
+        "summary",
+        None
+    )
 
-    summary = prepare_summary(summary)
-
-    summary = clean_text(summary)
+    summary = prepare_summary(
+        summary
+    )
 
     # --------------------------------------------------------
-    # FINAL CAPTION
+    # CAPTION
     # --------------------------------------------------------
 
     caption = (
@@ -172,9 +198,6 @@ def create_caption(item):
         "\n"
         f"<blockquote>{summary}</blockquote>\n"
         "\n"
-        "📅 ʀᴇʟᴇᴀsᴇ: ᴛʙᴀ\n"
-        "🎬 sᴛᴜᴅɪᴏ: ᴛʙᴀ\n"
-        "\n"
         "╰━━━━━━━━━━━━━━╯\n"
         "\n"
         f'⚡ <a href="{UPDATE_LINK}">Sᴛᴀʏ Uᴘᴅᴀᴛᴇᴅ</a>'
@@ -184,20 +207,22 @@ def create_caption(item):
 
 
 # ============================================================
-# NEWS BROADCAST
+# BROADCAST NEWS
 # ============================================================
 
 async def broadcast_news(app: Client):
 
-    logger = logging.getLogger("Broadcaster")
+    logger = logging.getLogger(
+        "Broadcaster"
+    )
 
     logger.info(
         "[Broadcaster] Starting news broadcast cycle..."
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # FETCH NEWS
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -206,7 +231,7 @@ async def broadcast_news(app: Client):
     except Exception as e:
 
         logger.exception(
-            "[Broadcaster] Failed to fetch news: %s",
+            "[Broadcaster] Failed to fetch latest news: %s",
             e
         )
 
@@ -220,13 +245,15 @@ async def broadcast_news(app: Client):
 
         return
 
-    # --------------------------------------------------------
-    # GET CHANNELS
-    # --------------------------------------------------------
+    # ========================================================
+    # TARGET CHANNELS
+    # ========================================================
 
     try:
 
-        target_channels = await db.get_all_channels()
+        target_channels = (
+            await db.get_all_channels()
+        )
 
     except Exception as e:
 
@@ -240,14 +267,14 @@ async def broadcast_news(app: Client):
     if not target_channels:
 
         logger.info(
-            "[Broadcaster] No target channels configured. Skipping."
+            "[Broadcaster] No target channels configured."
         )
 
         return
 
-    # --------------------------------------------------------
-    # PROCESS NEWS
-    # --------------------------------------------------------
+    # ========================================================
+    # PROCESS EACH NEWS ITEM
+    # ========================================================
 
     for item in reversed(news_items):
 
@@ -263,29 +290,28 @@ async def broadcast_news(app: Client):
             None
         )
 
+        # ----------------------------------------------------
+        # LINK REQUIRED FOR DUPLICATE CHECK
+        # ----------------------------------------------------
+
         if not link:
 
             logger.warning(
-                "[Broadcaster] News item has no link: %s",
+                "[Broadcaster] Missing news link: %s",
                 title
             )
 
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # DUPLICATE CHECK
-        # ----------------------------------------------------
+        # ====================================================
 
         try:
 
-            if await db.is_posted(link):
-
-                logger.info(
-                    "[Broadcaster] Already posted, skipping: '%s'",
-                    title
-                )
-
-                continue
+            already_posted = await db.is_posted(
+                link
+            )
 
         except Exception as e:
 
@@ -296,37 +322,50 @@ async def broadcast_news(app: Client):
 
             continue
 
-        # ----------------------------------------------------
+        if already_posted:
+
+            logger.info(
+                "[Broadcaster] Already posted, skipping: '%s'",
+                title
+            )
+
+            continue
+
+        # ====================================================
         # LOCK NEWS
-        # ----------------------------------------------------
+        # ====================================================
 
         try:
 
-            await db.mark_posted(link)
+            await db.mark_posted(
+                link
+            )
 
             logger.info(
-                "[Broadcaster] 🔒 Locked for posting: '%s'",
+                "[Broadcaster] 🔒 Locked: '%s'",
                 title
             )
 
         except Exception as e:
 
             logger.exception(
-                "[Broadcaster] Failed to mark news as posted: %s",
+                "[Broadcaster] Failed to lock news: %s",
                 e
             )
 
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # CREATE CAPTION
-        # ----------------------------------------------------
+        # ====================================================
 
-        caption = create_caption(item)
+        caption = create_caption(
+            item
+        )
 
-        # ----------------------------------------------------
+        # ====================================================
         # IMAGE
-        # ----------------------------------------------------
+        # ====================================================
 
         image_url = getattr(
             item,
@@ -334,19 +373,21 @@ async def broadcast_news(app: Client):
             None
         )
 
-        # ----------------------------------------------------
-        # SEND TO ALL CHANNELS
-        # ----------------------------------------------------
+        # ====================================================
+        # SEND TO TARGET CHANNELS
+        # ====================================================
 
         for channel in target_channels:
 
-            chat_id = resolve_chat_id(channel)
+            chat_id = resolve_chat_id(
+                channel
+            )
 
             try:
 
-                # ============================================
-                # WITH IMAGE
-                # ============================================
+                # ------------------------------------------------
+                # SEND WITH IMAGE
+                # ------------------------------------------------
 
                 if image_url:
 
@@ -358,14 +399,14 @@ async def broadcast_news(app: Client):
                     )
 
                     logger.info(
-                        "[Broadcaster] ✅ Sent image news to %s: '%s'",
+                        "[Broadcaster] ✅ Sent image to %s: '%s'",
                         chat_id,
                         title
                     )
 
-                # ============================================
-                # WITHOUT IMAGE
-                # ============================================
+                # ------------------------------------------------
+                # SEND WITHOUT IMAGE
+                # ------------------------------------------------
 
                 else:
 
@@ -377,7 +418,7 @@ async def broadcast_news(app: Client):
                     )
 
                     logger.info(
-                        "[Broadcaster] ✅ Sent text news to %s: '%s'",
+                        "[Broadcaster] ✅ Sent text to %s: '%s'",
                         chat_id,
                         title
                     )
@@ -390,9 +431,9 @@ async def broadcast_news(app: Client):
                     e
                 )
 
-                # ------------------------------------------------
-                # ADMIN ERROR MESSAGE
-                # ------------------------------------------------
+                # ================================================
+                # SEND ERROR TO ADMIN
+                # ================================================
 
                 try:
 
@@ -415,11 +456,12 @@ async def broadcast_news(app: Client):
                         )
 
                 except Exception:
+
                     pass
 
-        # ----------------------------------------------------
-        # DUMP / LOG CHANNEL
-        # ----------------------------------------------------
+        # ========================================================
+        # LOG / DUMP CHANNEL
+        # ========================================================
 
         if LOG_CHANNEL:
 
@@ -434,6 +476,10 @@ async def broadcast_news(app: Client):
                     f"{caption}"
                 )
 
+                # -----------------------------------------------
+                # LOG WITH IMAGE
+                # -----------------------------------------------
+
                 if image_url:
 
                     await app.send_photo(
@@ -442,6 +488,10 @@ async def broadcast_news(app: Client):
                         caption=dump_caption,
                         parse_mode=ParseMode.HTML
                     )
+
+                # -----------------------------------------------
+                # LOG WITHOUT IMAGE
+                # -----------------------------------------------
 
                 else:
 
@@ -463,11 +513,13 @@ async def broadcast_news(app: Client):
                     e
                 )
 
-        # ----------------------------------------------------
-        # DELAY BETWEEN POSTS
-        # ----------------------------------------------------
+        # ========================================================
+        # DELAY
+        # ========================================================
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(
+            3
+        )
 
     logger.info(
         "[Broadcaster] News broadcast cycle completed."
