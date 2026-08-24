@@ -55,14 +55,6 @@ PLUGIN_LIST = [
 # ============================================================
 
 def load_plugins():
-    """
-    Load every plugin separately.
-
-    If one plugin fails, the remaining plugins continue loading.
-
-    The complete traceback of a failed plugin is printed so the
-    exact import/dependency error can be seen in Render logs.
-    """
 
     logger.info("")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -87,10 +79,6 @@ def load_plugins():
 
         try:
 
-            # ------------------------------------------------
-            # If previously imported, reload it.
-            # ------------------------------------------------
-
             if plugin_name in sys.modules:
 
                 importlib.reload(
@@ -103,9 +91,7 @@ def load_plugins():
                     plugin_name
                 )
 
-            loaded.append(
-                plugin_name
-            )
+            loaded.append(plugin_name)
 
             logger.info(
                 "✅ Plugin loaded successfully: %s",
@@ -149,10 +135,6 @@ def load_plugins():
             logger.error(
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
 
     logger.info("")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -201,13 +183,12 @@ def load_plugins():
     logger.info(
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    logger.info("")
 
     return loaded, failed
 
 
 # ============================================================
-# LOAD PLUGINS BEFORE BOT STARTS
+# LOAD PLUGINS
 # ============================================================
 
 LOADED_PLUGINS, FAILED_PLUGINS = load_plugins()
@@ -221,29 +202,16 @@ class AnimeBot(Client):
 
     def __init__(self):
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # No:
-        #
-        # plugins={"root": "plugins"}
-        #
-        # because plugins are loaded manually above.
-        # ----------------------------------------------------
-
         super().__init__(
             name="anime_session",
-
             api_id=API_ID,
             api_hash=API_HASH,
-
             bot_token=BOT_TOKEN,
         )
 
         self.web_runner = None
         self.scheduler = None
         self.news_task = None
-
 
     # ========================================================
     # SAFE NEWS CHECK
@@ -257,9 +225,7 @@ class AnimeBot(Client):
                 "📰 Starting first RSS news check..."
             )
 
-            await broadcast_news(
-                self
-            )
+            await broadcast_news(self)
 
             logger.info(
                 "✅ First RSS news check completed"
@@ -279,16 +245,11 @@ class AnimeBot(Client):
                 "❌ First RSS news check failed"
             )
 
-
     # ========================================================
     # START
     # ========================================================
 
     async def start(self):
-
-        # ----------------------------------------------------
-        # START PYROGRAM
-        # ----------------------------------------------------
 
         await super().start()
 
@@ -304,10 +265,9 @@ class AnimeBot(Client):
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
-
-        # ====================================================
+        # ----------------------------------------------------
         # BOT INFORMATION
-        # ====================================================
+        # ----------------------------------------------------
 
         try:
 
@@ -329,13 +289,11 @@ class AnimeBot(Client):
                 "❌ Could not get bot information"
             )
 
-
-        # ====================================================
+        # ----------------------------------------------------
         # PLUGIN STATUS
-        # ====================================================
+        # ----------------------------------------------------
 
         logger.info("")
-
         logger.info(
             "🔌 Registered plugin status:"
         )
@@ -361,10 +319,9 @@ class AnimeBot(Client):
                     short_name
                 )
 
-
-        # ====================================================
+        # ----------------------------------------------------
         # RESTART NOTIFICATION
-        # ====================================================
+        # ----------------------------------------------------
 
         try:
 
@@ -380,16 +337,11 @@ class AnimeBot(Client):
                     text="✦ ʙᴏᴛ ʀᴇsᴛᴀʀᴛᴇᴅ ✓"
                 )
 
-                logger.info(
-                    "✅ Restart notification sent"
-                )
-
         except Exception:
 
             logger.exception(
                 "⚠️ Could not send restart notification"
             )
-
 
         # ====================================================
         # SCHEDULER
@@ -401,74 +353,42 @@ class AnimeBot(Client):
                 timezone=IST
             )
 
-
-            # ------------------------------------------------
             # RSS NEWS
-            # ------------------------------------------------
-
             self.scheduler.add_job(
-
                 broadcast_news,
-
                 "interval",
-
                 minutes=UPDATE_INTERVAL,
-
                 args=[self],
-
                 id="broadcast_job",
-
                 replace_existing=True,
-
                 max_instances=1,
-
                 coalesce=True,
-
             )
 
-
-            # ------------------------------------------------
             # WEEKLY TOP 16
-            # ------------------------------------------------
-
             self.scheduler.add_job(
-
                 send_weekly_anime,
-
                 "cron",
-
                 day_of_week="sun",
-
                 hour=20,
-
                 minute=0,
-
                 second=0,
-
                 args=[self],
-
                 id="weekly_top16_anime",
-
                 replace_existing=True,
-
                 max_instances=1,
-
                 coalesce=True,
-
             )
-
 
             self.scheduler.start()
 
             logger.info(
-                "✅ RSS scheduler started — "
-                "every %s minute(s)",
+                "✅ RSS scheduler started — every %s minute(s)",
                 UPDATE_INTERVAL
             )
 
             logger.info(
-                "🏆 Weekly Top 16 scheduled — "
-                "Sunday 8:00 PM IST"
+                "🏆 Weekly Top 16 scheduled — Sunday 8:00 PM IST"
             )
 
         except Exception:
@@ -476,7 +396,6 @@ class AnimeBot(Client):
             logger.exception(
                 "❌ Scheduler startup failed"
             )
-
 
         # ====================================================
         # FIRST RSS CHECK
@@ -498,7 +417,6 @@ class AnimeBot(Client):
                 "❌ Could not launch first RSS check"
             )
 
-
         # ====================================================
         # RENDER HEALTH SERVER
         # ====================================================
@@ -510,11 +428,9 @@ class AnimeBot(Client):
                 status=200
             )
 
-
         try:
 
             app = web.Application()
-
 
             app.router.add_get(
                 "/",
@@ -526,17 +442,11 @@ class AnimeBot(Client):
                 health
             )
 
-
             self.web_runner = web.AppRunner(
                 app
             )
 
             await self.web_runner.setup()
-
-
-            # ------------------------------------------------
-            # Render PORT
-            # ------------------------------------------------
 
             port = int(
                 os.environ.get(
@@ -545,23 +455,16 @@ class AnimeBot(Client):
                 )
             )
 
-
             site = web.TCPSite(
-
                 self.web_runner,
-
                 "0.0.0.0",
-
                 port
-
             )
 
             await site.start()
 
-
             logger.info(
-                "✅ Web server running on "
-                "0.0.0.0:%s",
+                "✅ Web server running on 0.0.0.0:%s",
                 port
             )
 
@@ -570,7 +473,6 @@ class AnimeBot(Client):
             logger.exception(
                 "❌ Web server startup failed"
             )
-
 
         # ====================================================
         # FINAL STATUS
@@ -617,10 +519,6 @@ class AnimeBot(Client):
                 "⚠️ Some plugins failed to load!"
             )
 
-            logger.error(
-                "Check the PLUGIN FAILED traceback above."
-            )
-
         else:
 
             logger.info(
@@ -630,9 +528,6 @@ class AnimeBot(Client):
         logger.info(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-
-        logger.info("")
-
 
     # ========================================================
     # STOP
@@ -660,16 +555,11 @@ class AnimeBot(Client):
 
                         pass
 
-                logger.info(
-                    "🛑 First RSS task stopped"
-                )
-
             except Exception:
 
                 logger.exception(
                     "⚠️ RSS task shutdown error"
                 )
-
 
         # ----------------------------------------------------
         # STOP SCHEDULER
@@ -683,16 +573,11 @@ class AnimeBot(Client):
                     wait=False
                 )
 
-                logger.info(
-                    "🛑 Scheduler stopped"
-                )
-
             except Exception:
 
                 logger.exception(
                     "⚠️ Scheduler shutdown error"
                 )
-
 
         # ----------------------------------------------------
         # STOP WEB SERVER
@@ -704,16 +589,11 @@ class AnimeBot(Client):
 
                 await self.web_runner.cleanup()
 
-                logger.info(
-                    "🛑 Web server stopped"
-                )
-
             except Exception:
 
                 logger.exception(
                     "⚠️ Web server shutdown error"
                 )
-
 
         # ----------------------------------------------------
         # STOP PYROGRAM
@@ -722,10 +602,6 @@ class AnimeBot(Client):
         try:
 
             await super().stop()
-
-            logger.info(
-                "🛑 Bot stopped"
-            )
 
         except Exception:
 
@@ -742,7 +618,6 @@ if __name__ == "__main__":
 
     try:
 
-        logger.info("")
         logger.info(
             "🚀 Starting Anime News Bot..."
         )
