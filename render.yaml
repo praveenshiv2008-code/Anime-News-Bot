@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: anime-news-bot
+    runtime: python
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: python bot.py
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: API_ID
+        sync: false
+
+      - key: API_HASH
+        sync: false
+
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: MONGO_URI
+        sync: false
+
+      - key: DATABASE_NAME
+        sync: false
+
+      - key: CHANNEL_ID
+        sync: false
+
+      - key: ADMIN_IDS
+        sync: false
+
+      - key: LOG_CHANNEL
+        sync: false
+
+      - key: UPDATE_INTERVAL
+        value: "10"
