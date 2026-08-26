@@ -1,131 +1,76 @@
-import os
+import asyncio
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from aiohttp import web
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram import Client
 
-from config import API_ID, API_HASH, BOT_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, UPDATE_INTERVAL
+from helper.news_job import broadcast_news
+from helper.weekly_anime import send_weekly_anime
+from route import web_server   # aiohttp health‑check server
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-logger = logging.getLogger("TEST_BOT")
-
-
-bot = Client(
-    "anime_test_bot",
+# ---------- Pyrogram Client ----------
+app = Client(
+    "anime_news_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True
 )
 
+# ---------- Load All Plugins ----------
+import plugins.help
+import plugins.admin
+import plugins.anime
+import plugins.img
+import plugins.trending
+import plugins.weekly
+import plugins.start   # we add this now
 
-@bot.on_message(filters.private & filters.command("start"))
-async def start(client: Client, message: Message):
+# ---------- Background Tasks ----------
+async def news_scheduler():
+    """Run news broadcast every UPDATE_INTERVAL minutes."""
+    interval = max(1, UPDATE_INTERVAL) * 60   # seconds
+    while True:
+        try:
+            await broadcast_news(app)
+        except Exception as e:
+            logger.error(f"News broadcast error: {e}")
+        await asyncio.sleep(interval)
 
-    logger.info(
-        "START RECEIVED FROM USER %s",
-        message.from_user.id
-    )
+async def weekly_scheduler():
+    """Run weekly Top 16 every Sunday at midnight IST."""
+    ist = ZoneInfo("Asia/Kolkata")
+    while True:
+        now = datetime.now(ist)
+        days_until_sunday = (6 - now.weekday()) % 7
+        if days_until_sunday == 0 and now.hour == 0 and now.minute == 0:
+            try:
+                await send_weekly_anime(app)
+            except Exception as e:
+                logger.error(f"Weekly anime error: {e}")
+            await asyncio.sleep(86400)   # avoid re‑trigger
+        else:
+            await asyncio.sleep(60)      # check every minute
 
-    await message.reply_text(
-        "╭━━━━━「 ɪɴꜰᴏ 」━━━━━╮\n\n"
-        "🔥 ʙᴏᴛ ɪs ᴡᴏʀᴋɪɴɢ!\n\n"
-        "ʏᴏᴜʀ /start ᴄᴏᴍᴍᴀɴᴅ ɪs ʀᴇᴀᴄʜɪɴɢ ᴛʜᴇ ʙᴏᴛ.\n\n"
-        "╰━━━━━━━━━━━━━━╯\n\n"
-        "⚡ Sᴛᴀʏ Uᴘᴅᴀᴛᴇᴅ"
-    )
-
-
-@bot.on_message(filters.private & filters.text)
-async def test_message(client: Client, message: Message):
-
-    logger.info(
-        "MESSAGE RECEIVED: %s",
-        message.text
-    )
-
-
-async def health(request):
-
-    return web.Response(
-        text="Anime News Bot is running!"
-    )
-
-
+# ---------- Main ----------
 async def main():
+    # Start the aiohttp health‑check server
+    await web_server()
+    logger.info("Health‑check web server started.")
 
-    await bot.start()
+    # Start background tasks
+    asyncio.create_task(news_scheduler())
+    asyncio.create_task(weekly_scheduler())
 
-    me = await bot.get_me()
-
-    logger.info(
-        "===================================="
-    )
-
-    logger.info(
-        "BOT CONNECTED"
-    )
-
-    logger.info(
-        "USERNAME: @%s",
-        me.username
-    )
-
-    logger.info(
-        "BOT ID: %s",
-        me.id
-    )
-
-    logger.info(
-        "===================================="
-    )
-
-    app = web.Application()
-
-    app.router.add_get(
-        "/",
-        health
-    )
-
-    app.router.add_get(
-        "/health",
-        health
-    )
-
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            "10000"
-        )
-    )
-
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        port
-    )
-
-    await site.start()
-
-    logger.info(
-        "HEALTH SERVER: %s",
-        port
-    )
-
-    await bot.idle()
-
+    # Start the bot
+    await app.start()
+    logger.info("Bot started. Waiting for messages...")
+    await asyncio.Event().wait()   # keep running
 
 if __name__ == "__main__":
-
-    import asyncio
-
     asyncio.run(main())
