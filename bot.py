@@ -9,7 +9,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask
 
-# Load environment variables
 load_dotenv()
 
 # ----------------- CONFIGURATION -----------------
@@ -27,7 +26,7 @@ RSS_FEEDS_FILE = "rss_feeds.json"
 LAST_UPDATE_FILE = "last_update_id.txt"
 # -------------------------------------------------
 
-# ---------- Flask Web Server (for Render) ----------
+# ---------- Flask Web Server ----------
 app = Flask(__name__)
 
 @app.route('/')
@@ -42,7 +41,7 @@ def run_web_server():
 threading.Thread(target=run_web_server, daemon=True).start()
 # -------------------------------------------------
 
-# ---------- Small Caps Conversion ----------
+# ---------- Small Caps ----------
 SMALL_CAPS_MAP = {
     'a': 'ᴀ', 'b': 'ʙ', 'c': 'ᴄ', 'd': 'ᴅ', 'e': 'ᴇ',
     'f': 'ғ', 'g': 'ɢ', 'h': 'ʜ', 'i': 'ɪ', 'j': 'ᴊ',
@@ -107,7 +106,7 @@ def save_last_update_id(update_id):
     with open(LAST_UPDATE_FILE, 'w') as f:
         f.write(str(update_id))
 
-# ---------- Fetch news from all feeds ----------
+# ---------- Fetch news ----------
 def fetch_news(limit=10):
     feeds = load_rss_feeds()
     all_entries = {}
@@ -122,21 +121,32 @@ def fetch_news(limit=10):
             print(f"Error fetching feed {feed_url}: {e}")
     return list(all_entries.values())[:limit]
 
-# ---------- TMDb Image Fetch (for news, medium quality) ----------
+# ---------- Title cleaning for image search ----------
+def clean_title_for_search(title):
+    stop_words = ["anime", "manga", "tv", "series", "announced", "confirmed", 
+                  "release", "premiere", "trailer", "teaser", "new", "coming"]
+    words = title.split()
+    cleaned = [w for w in words if w.lower() not in stop_words]
+    if not cleaned:
+        cleaned = words[:5]
+    return " ".join(cleaned[:5])
+
+# ---------- Image fetch (with fallback) ----------
 def get_anime_image(title):
     if not TMDB_API_KEY:
+        print("No TMDB API key - skipping image fetch.")
         return None
     cache = load_image_cache()
     if title in cache:
         return cache[title]
-
+    
+    search_query = clean_title_for_search(title)
+    print(f"Searching image for: '{title}' (cleaned: '{search_query}')")
+    
+    # Try TMDb
     url = "https://api.themoviedb.org/3/search/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "query": title,
-        "include_adult": False,
-        "language": "en-US"
-    }
+    params = {"api_key": TMDB_API_KEY, "query": search_query, "include_adult": False}
+    img_url = None
     try:
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
@@ -144,18 +154,27 @@ def get_anime_image(title):
             for res in data.get("results", []):
                 poster = res.get("poster_path")
                 if poster:
-                    img_url = "https://image.tmdb.org/t/p/w500" + poster  # medium
-                    cache[title] = img_url
-                    save_image_cache(cache)
-                    return img_url
-        cache[title] = None
-        save_image_cache(cache)
-        return None
+                    img_url = "https://image.tmdb.org/t/p/w500" + poster
+                    break
     except Exception as e:
-        print(f"Error fetching image: {e}")
-        return None
+        print(f"TMDb error: {e}")
+    
+    # Fallback to MAL
+    if not img_url:
+        print("TMDb no image, trying MAL...")
+        try:
+            mal_info = fetch_anime_info(search_query)
+            if mal_info and mal_info["image_url"]:
+                img_url = mal_info["image_url"]
+                print(f"Found image from MAL: {img_url}")
+        except Exception as e:
+            print(f"MAL error: {e}")
+    
+    cache[title] = img_url
+    save_image_cache(cache)
+    return img_url
 
-# ---------- TMDb HQ Image Fetch (for /img) ----------
+# ---------- HQ Image for /img ----------
 def get_anime_image_hq(title):
     if not TMDB_API_KEY:
         return None
@@ -163,13 +182,11 @@ def get_anime_image_hq(title):
     cache_key = f"{title}_hq"
     if cache_key in cache:
         return cache[cache_key]
-
+    
+    search_query = clean_title_for_search(title)
     url = "https://api.themoviedb.org/3/search/movie"
-    params = {
-        "api_key": TMDB_API_KEY,
-        "query": title,
-        "include_adult": False
-    }
+    params = {"api_key": TMDB_API_KEY, "query": search_query, "include_adult": False}
+    img_url = None
     try:
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
@@ -177,18 +194,25 @@ def get_anime_image_hq(title):
             for res in data.get("results", []):
                 poster = res.get("poster_path")
                 if poster:
-                    img_url = "https://image.tmdb.org/t/p/original" + poster  # original quality
-                    cache[cache_key] = img_url
-                    save_image_cache(cache)
-                    return img_url
-        cache[cache_key] = None
-        save_image_cache(cache)
-        return None
+                    img_url = "https://image.tmdb.org/t/p/original" + poster
+                    break
     except Exception as e:
-        print(f"Error fetching HQ image: {e}")
-        return None
+        print(f"HQ TMDb error: {e}")
+    
+    # If no TMDb HQ, try MAL
+    if not img_url:
+        try:
+            mal_info = fetch_anime_info(search_query)
+            if mal_info and mal_info["image_url"]:
+                img_url = mal_info["image_url"]
+        except Exception as e:
+            print(f"MAL HQ error: {e}")
+    
+    cache[cache_key] = img_url
+    save_image_cache(cache)
+    return img_url
 
-# ---------- Build caption for news ----------
+# ---------- Build caption ----------
 def build_caption(title, summary, link):
     title_sc = to_small_caps(title)
     summary_sc = to_small_caps(summary)
@@ -210,7 +234,6 @@ def build_caption(title, summary, link):
 def send_telegram_message(caption, chat_id=None, photo_url=None):
     if chat_id is None:
         chat_id = TELEGRAM_CHAT_ID
-
     if photo_url:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {
@@ -228,7 +251,6 @@ def send_telegram_message(caption, chat_id=None, photo_url=None):
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
-
     response = requests.post(url, data=payload)
     if response.status_code != 200:
         print(f"Failed to send: {response.text}")
@@ -275,7 +297,6 @@ def build_anime_caption(info):
     else:
         title_display = title
     title_sc = to_small_caps(title_display)
-
     details = f"""
 📖 <b>Synopsis</b>:
 {info['synopsis'][:500]}{'...' if len(info['synopsis']) > 500 else ''}
@@ -286,7 +307,6 @@ def build_anime_caption(info):
 📂 <b>Source</b>: {info['source']}
 🎭 <b>Genres</b>: {info['genres']}
 """
-
     caption = f"""<blockquote>
 ╭━━━━━「 ᴀɴɪᴍᴇ 」━━━━━╮
 
@@ -298,7 +318,6 @@ def build_anime_caption(info):
 
 ⚡ <a href='https://t.me/Anicore_Animes'>ꜱᴛᴀʏ ᴜᴘᴅᴀᴛᴇᴅ</a>
 </blockquote>"""
-
     if info["mal_url"]:
         caption += f"\n\n<a href='{info['mal_url']}'>🔗 View on MyAnimeList</a>"
     return caption
@@ -353,7 +372,7 @@ def build_weekly_caption(top_list):
         caption += f"\n<a href='{top_list[0]['mal_url']}'>🔗 View #1 on MyAnimeList</a>"
     return caption
 
-# ---------- Fanart.tv image fetch ----------
+# ---------- Fanart.tv ----------
 def fetch_anime_image_fanart(title):
     if not FANART_API_KEY:
         return None
@@ -458,7 +477,6 @@ Stay tuned for updates! 🚀"""
             if possible_source in ["tmdb", "mal", "fanart", "imdb"]:
                 source = possible_source
 
-        # Collect images from the chosen source(s)
         images = []
         if source == "all" or source == "tmdb":
             img = get_anime_image_hq(query)
@@ -472,7 +490,7 @@ Stay tuned for updates! 🚀"""
             img = fetch_anime_image_fanart(query)
             if img:
                 images.append(("Fanart.tv", img))
-        if source == "imdb":  # IMDb via TMDb
+        if source == "imdb":
             img = get_anime_image_hq(query)
             if img:
                 images.append(("IMDb (via TMDb)", img))
@@ -481,7 +499,6 @@ Stay tuned for updates! 🚀"""
             send_telegram_message(f"❌ No images found for '<b>{query}</b>'.", chat_id)
             return
 
-        # Send each image as a separate message
         for src, url in images:
             title_sc = to_small_caps(query)
             caption = f"""<blockquote>
@@ -495,7 +512,7 @@ Source: <b>{src}</b>
 ⚡ <a href='https://t.me/Anicore_Animes'>ꜱᴛᴀʏ ᴜᴘᴅᴀᴛᴇᴅ</a>
 </blockquote>"""
             send_telegram_message(caption, chat_id, photo_url=url)
-            time.sleep(1)  # avoid rate limits
+            time.sleep(1)
 
     elif text.startswith("/weekly"):
         parts = text.split()
@@ -527,7 +544,7 @@ Source: <b>{src}</b>
         if news:
             title, summary, link = news[0]
             caption = build_caption(title, summary, link)
-            img_url = get_anime_image(title)  # medium quality for speed
+            img_url = get_anime_image(title)
             send_telegram_message(caption, chat_id, photo_url=img_url)
         else:
             send_telegram_message("❌ Could not fetch the latest news right now.", chat_id)
@@ -604,16 +621,13 @@ Source: <b>{src}</b>
     else:
         send_telegram_message("❓ Unknown command. Type /help to see available commands.", chat_id)
 
-# ---------- Poll for incoming commands ----------
+# ---------- Poll for updates ----------
 last_update_id = load_last_update_id()
 
 def handle_updates():
     global last_update_id
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    params = {
-        "offset": last_update_id + 1,
-        "timeout": 5
-    }
+    params = {"offset": last_update_id + 1, "timeout": 5}
     try:
         response = requests.get(url, params=params, timeout=10)
         if response.status_code == 200:
@@ -643,7 +657,7 @@ def job():
     if new_entries:
         for title, summary, link in new_entries:
             caption = build_caption(title, summary, link)
-            img_url = get_anime_image(title)   # medium quality for speed
+            img_url = get_anime_image(title)
             send_telegram_message(caption, photo_url=img_url)
             time.sleep(1)
         save_seen(seen)
