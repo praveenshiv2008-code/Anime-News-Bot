@@ -110,74 +110,84 @@ async def fetch_image_from_article(session: aiohttp.ClientSession, article_url: 
         return None
 
 
-# --- 🔤 REGEX-BASED ANIME NAME EXTRACTOR (MULTI-CANDIDATE) ---
+# ============================================================
+# 🔤 IMPROVED REGEX‑BASED ANIME NAME EXTRACTOR
+# ============================================================
 def extract_anime_names(title: str) -> list[str]:
     """
-    Extracts ALL possible anime names from the title using multiple patterns.
-    Returns them in priority order for fallback searching.
-    
-    Priority:
-      1. Text inside quotes ("" or '') - with and without subtitle
-      2. Text before colon :
-      3. Text before dash -
-      4. Text before season/media words
+    Extract possible anime names from a news headline.
+    Returns a list of candidates in order of priority.
     """
     title = title.strip()
     candidates = []
-    seen = set()  # Avoid duplicates
+    seen = set()
 
-    # --- Pattern 1: Text inside quotes "" or '' ---
-    quoted_match = re.search(r'["\']([^"\']+)["\']', title)
-    if quoted_match:
-        result = quoted_match.group(1).strip()
-        if len(result) > 2 and result not in seen:
-            candidates.append(result)
-            seen.add(result)
-            
-            # Also try without subtitle (if colon exists inside quotes)
-            if ':' in result:
-                base_name = result.split(':')[0].strip()
-                if len(base_name) > 2 and base_name not in seen:
-                    candidates.append(base_name)
-                    seen.add(base_name)
+    # ----- Helper to add candidate if not seen and length > 2 -----
+    def add_candidate(text):
+        text = text.strip().strip('"\'')
+        if len(text) > 2 and text not in seen:
+            seen.add(text)
+            candidates.append(text)
 
-    # --- Pattern 2: Text before colon : ---
-    colon_match = re.match(r'^(.+?):', title)
-    if colon_match:
-        result = colon_match.group(1).strip().strip('"\'')
-        if len(result) > 2 and result not in seen:
-            candidates.append(result)
-            seen.add(result)
+    # ----- 1. Full title (as is) -----
+    add_candidate(title)
 
-    # --- Pattern 3: Text before dash - ---
-    dash_match = re.match(r'^(.+?)\s[-–]\s', title)
-    if dash_match:
-        result = dash_match.group(1).strip().strip('"\'')
-        # Skip if it ends with season/episode info
-        if not re.search(r'\b(?:season|vol|ep|chapter)\s*\d*$', result, re.IGNORECASE):
-            if len(result) > 2 and result not in seen:
-                candidates.append(result)
-                seen.add(result)
+    # ----- 2. Text inside quotes ("" or '') -----
+    quoted = re.findall(r'["\']([^"\']+)["\']', title)
+    for q in quoted:
+        add_candidate(q)
 
-    # --- Pattern 4: Text before season/media-type words ---
-    media_match = re.match(
-        r'^(.+?)\s+(?:season|anime|manga|manhwa|manhua|donghua|vol|volume|episode|ep|ch|chapter)\b',
-        title,
-        re.IGNORECASE
-    )
-    if media_match:
-        result = media_match.group(1).strip().strip('"\'')
-        if len(result) > 2 and result not in seen:
-            candidates.append(result)
-            seen.add(result)
+    # ----- 3. Before first colon, dash, or parentheses -----
+    for sep in [':', '–', '—', '(', '【']:
+        if sep in title:
+            part = title.split(sep, 1)[0].strip()
+            add_candidate(part)
+            break  # take the first separator that works
 
-    if not candidates:
-        logging.info(f"[NameExtract] ❌ No pattern matched: '{title}'")
-    else:
-        logging.info(f"[NameExtract] Extracted {len(candidates)} candidate(s) from '{title}':")
-        for i, candidate in enumerate(candidates, 1):
-            logging.info(f"[NameExtract]   {i}. '{candidate}'")
+    # ----- 4. Strip common suffixes after a dash or colon -----
+    # Remove everything after these keywords
+    suffixes = [
+        r'\s+Season\s+\d+',
+        r'\s+Volume\s+\d+',
+        r'\s+Episode\s+\d+',
+        r'\s+Part\s+\d+',
+        r'\s+Announces\s+',
+        r'\s+Reveals\s+',
+        r'\s+Trailer\s+',
+        r'\s+Review\s+',
+        r'\s+Premiere\s+',
+        r'\s+Release\s+',
+        r'\s+Cast\s+',
+        r'\s+Dub\s+',
+        r'\s+Anime\s*$',
+        r'\s+Manga\s*$',
+        r'\s+Film\s*$',
+        r'\s+Movie\s*$',
+        r'\s+OVA\s*$',
+        r'\s+Special\s*$',
+    ]
+    cleaned = title
+    for pat in suffixes:
+        cleaned = re.sub(pat, '', cleaned, flags=re.IGNORECASE)
+    if cleaned != title:
+        add_candidate(cleaned.strip())
 
+    # ----- 5. First 3–4 words (if the title is long) -----
+    words = title.split()
+    if len(words) > 4:
+        short = ' '.join(words[:4])
+        add_candidate(short)
+    if len(words) > 3:
+        short = ' '.join(words[:3])
+        add_candidate(short)
+
+    # ----- 6. Remove common trailing words like "Anime", "Series", "TV" -----
+    for word in ['Anime', 'Manga', 'Series', 'TV', 'Film', 'Movie', 'OVA', 'Special']:
+        if candidates and candidates[-1].endswith(' ' + word):
+            trimmed = candidates[-1][:-len(word)].strip()
+            add_candidate(trimmed)
+
+    # ----- Return unique candidates (order preserved) -----
     return candidates
 
 
@@ -214,7 +224,7 @@ async def get_anilist_poster(session: aiohttp.ClientSession, title: str, retries
     }
     '''
 
-    # Get ALL candidate names
+    # Get ALL candidate names using the improved extractor
     search_terms = extract_anime_names(title)
 
     if not search_terms:
