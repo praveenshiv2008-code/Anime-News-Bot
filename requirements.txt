@@ -7,3 +7,4 @@ aiosqlite
 beautifulsoup4
 motor
 httpx
+Flask==2.3.3
