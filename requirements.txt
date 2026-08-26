@@ -6,3 +6,6 @@ apscheduler
 aiosqlite
 beautifulsoup4
 motor
+httpx
+pymongo
+python-dotenv
