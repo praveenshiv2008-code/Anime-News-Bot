@@ -22,6 +22,7 @@ CHECK_INTERVAL_MINUTES = 5                     # check every 5 minutes
 SEEN_FILE = "seen_links.json"
 IMAGE_CACHE_FILE = "image_cache.json"
 RSS_FEEDS_FILE = "rss_feeds.json"
+LAST_UPDATE_FILE = "last_update_id.txt"
 
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 # -------------------------------------------------
@@ -81,6 +82,16 @@ def load_rss_feeds():
 def save_rss_feeds(feeds):
     with open(RSS_FEEDS_FILE, 'w') as f:
         json.dump(feeds, f)
+
+def load_last_update_id():
+    if os.path.exists(LAST_UPDATE_FILE):
+        with open(LAST_UPDATE_FILE, 'r') as f:
+            return int(f.read().strip())
+    return 0
+
+def save_last_update_id(update_id):
+    with open(LAST_UPDATE_FILE, 'w') as f:
+        f.write(str(update_id))
 
 # ---------- Fetch news from all feeds ----------
 def fetch_news(limit=10):
@@ -384,10 +395,16 @@ Stay tuned for updates! 🚀"""
 <i>The bot automatically posts new news every 5 minutes.</i>"""
         send_telegram_message(msg, chat_id)
 
+    # ------------------- /anime -------------------
     elif text.startswith("/anime"):
         query = text[len("/anime"):].strip()
         if not query:
-            send_telegram_message("❓ Please provide an anime name.\nExample: <code>/anime Naruto</code>", chat_id)
+            send_telegram_message(
+                "❓ Please provide an anime name.\n"
+                "<b>Usage</b>: <code>/anime &lt;name&gt;</code>\n"
+                "Example: <code>/anime Naruto</code>",
+                chat_id
+            )
             return
         info = fetch_anime_info(query)
         if not info:
@@ -396,10 +413,16 @@ Stay tuned for updates! 🚀"""
         caption = build_anime_caption(info)
         send_telegram_message(caption, chat_id, photo_url=info["image_url"])
 
+    # ------------------- /img -------------------
     elif text.startswith("/img"):
         parts = text.split(maxsplit=2)
         if len(parts) < 2:
-            send_telegram_message("❓ Please provide an anime name.\nExample: <code>/img Naruto</code>", chat_id)
+            send_telegram_message(
+                "❓ Please provide an anime name.\n"
+                "<b>Usage</b>: <code>/img &lt;name&gt; [source]</code>\n"
+                "Example: <code>/img Naruto mal</code> (source optional, default: tmdb)",
+                chat_id
+            )
             return
         query = parts[1]
         source = "tmdb"
@@ -431,6 +454,7 @@ Stay tuned for updates! 🚀"""
 </blockquote>"""
         send_telegram_message(caption, chat_id, photo_url=image_url)
 
+    # ------------------- /weekly -------------------
     elif text.startswith("/weekly"):
         parts = text.split()
         count = 10
@@ -442,7 +466,13 @@ Stay tuned for updates! 🚀"""
                 elif count > 50:
                     count = 50
             except ValueError:
-                pass
+                send_telegram_message(
+                    "❌ Please provide a valid number.\n"
+                    "<b>Usage</b>: <code>/weekly [count]</code>\n"
+                    "Example: <code>/weekly 16</code> (max 50)",
+                    chat_id
+                )
+                return
         top_list = fetch_top_anime(count)
         if not top_list:
             send_telegram_message("❌ Could not fetch top anime right now. Please try later.", chat_id)
@@ -450,6 +480,7 @@ Stay tuned for updates! 🚀"""
         caption = build_weekly_caption(top_list)
         send_telegram_message(caption, chat_id, photo_url=top_list[0]["image_url"])
 
+    # ------------------- /latest -------------------
     elif text == "/latest":
         news = fetch_news(limit=1)
         if news:
@@ -460,6 +491,7 @@ Stay tuned for updates! 🚀"""
         else:
             send_telegram_message("❌ Could not fetch the latest news right now.", chat_id)
 
+    # ------------------- /status -------------------
     elif text == "/status":
         feeds = load_rss_feeds()
         msg = f"""<b>⚙️ Bot Status</b>
@@ -471,14 +503,18 @@ Stay tuned for updates! 🚀"""
 ✅ Bot is running smoothly."""
         send_telegram_message(msg, chat_id)
 
-    # ---------- Admin-only commands ----------
+    # ------------------- Admin-only commands -------------------
     elif text.startswith("/add_rss"):
         if chat_id != ADMIN_CHAT_ID:
             send_telegram_message("⛔ You are not authorized to use this command.", chat_id)
             return
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            send_telegram_message("❓ Usage: <code>/add_rss &lt;feed_url&gt;</code>", chat_id)
+            send_telegram_message(
+                "❓ Usage: <code>/add_rss &lt;feed_url&gt;</code>\n"
+                "Example: <code>/add_rss https://example.com/feed.xml</code>",
+                chat_id
+            )
             return
         new_url = parts[1].strip()
         feeds = load_rss_feeds()
@@ -495,7 +531,11 @@ Stay tuned for updates! 🚀"""
             return
         parts = text.split(maxsplit=1)
         if len(parts) < 2:
-            send_telegram_message("❓ Usage: <code>/rem_rss &lt;index&gt;</code>\nUse /view_rss to see indices.", chat_id)
+            send_telegram_message(
+                "❓ Usage: <code>/rem_rss &lt;index&gt;</code>\n"
+                "Use <code>/view_rss</code> to see the list with indices.",
+                chat_id
+            )
             return
         try:
             idx = int(parts[1].strip())
@@ -526,7 +566,7 @@ Stay tuned for updates! 🚀"""
         send_telegram_message("❓ Unknown command. Type /help to see available commands.", chat_id)
 
 # ---------- Poll for incoming commands ----------
-last_update_id = 0
+last_update_id = load_last_update_id()
 
 def handle_updates():
     global last_update_id
@@ -542,6 +582,7 @@ def handle_updates():
             if data.get("ok"):
                 for update in data["result"]:
                     last_update_id = update["update_id"]
+                    save_last_update_id(last_update_id)   # persist immediately
                     message = update.get("message")
                     if message:
                         chat_id = message["chat"]["id"]
