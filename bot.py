@@ -10,7 +10,6 @@ from config import API_ID, API_HASH, BOT_TOKEN, UPDATE_INTERVAL, PORT
 from helper.news_job import broadcast_news
 from route import web_server
 
-# ---------- Logging ----------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -25,29 +24,38 @@ class AnimeBot(Client):
             api_id=API_ID,
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
-            plugins=dict(root="plugins"),   # auto‑load all .py files in plugins/
+            plugins=dict(root="plugins"),
             in_memory=True
         )
+        self._started = False
 
-    # ---------- Start ----------
-    async def start(self):
-        # Start the client and load plugins
-        try:
-            await super().start()
-            logger.info("✅ Pyrogram client started.")
-        except FloodWait as e:
-            logger.warning(f"⏳ FloodWait: waiting {e.value}s before retry.")
-            await asyncio.sleep(e.value)
-            await super().start()
-            logger.info("✅ Pyrogram client started after flood wait.")
+    # ---------- Start client with non‑blocking retry ----------
+    async def start_client_with_retry(self):
+        """Attempt to start the client, retry on FloodWait without blocking."""
+        retries = 0
+        max_retries = 10
+        while not self._started and retries < max_retries:
+            try:
+                await super().start()
+                self._started = True
+                logger.info("✅ Pyrogram client started.")
+                # Now that client is up, schedule background tasks
+                await self._schedule_tasks()
+                return
+            except FloodWait as e:
+                wait = e.value
+                retries += 1
+                logger.warning(f"⏳ FloodWait: waiting {wait}s before retry (attempt {retries}/{max_retries}).")
+                await asyncio.sleep(wait)
+            except Exception as e:
+                logger.error(f"❌ Client start failed: {e}")
+                retries += 1
+                await asyncio.sleep(60)  # wait a bit before retry
+        if not self._started:
+            logger.error("❌ Failed to start client after multiple retries.")
 
-        # ---------- Echo handler for diagnostics ----------
-        @self.on_message(filters.text & filters.private)
-        async def echo(client, message):
-            logger.info(f"📩 Received: '{message.text}' from {message.from_user.id}")
-            await message.reply_text(f"Echo: {message.text}")
-
-        # ---------- Scheduler ----------
+    # ---------- Schedule background tasks ----------
+    async def _schedule_tasks(self):
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             broadcast_news,
@@ -64,9 +72,10 @@ class AnimeBot(Client):
         asyncio.create_task(broadcast_news(self))
         logger.info("✅ First broadcast task launched.")
 
-        # ---------- Web Server ----------
+    # ---------- Start health server and bot ----------
+    async def start(self):
+        # 1. Start health server first
         try:
-            # route.web_server() returns an aiohttp Application
             app_web = await web_server()
             runner = web.AppRunner(app_web)
             await runner.setup()
@@ -74,7 +83,19 @@ class AnimeBot(Client):
             await site.start()
             logger.info(f"✅ Health‑check web server running on port {PORT}")
         except Exception as e:
-            logger.error(f"❌ Web server failed to start: {e}")
+            logger.error(f"❌ Web server failed: {e}")
+
+        # 2. Start client in background (non‑blocking)
+        asyncio.create_task(self.start_client_with_retry())
+
+        # 3. Echo handler (adds after client is started? Actually we can add it before)
+        @self.on_message(filters.text & filters.private)
+        async def echo(client, message):
+            logger.info(f"📩 Received: '{message.text}' from {message.from_user.id}")
+            await message.reply_text(f"Echo: {message.text}")
+
+        # Keep the event loop alive
+        await asyncio.Event().wait()
 
     # ---------- Stop ----------
     async def stop(self, *args):
