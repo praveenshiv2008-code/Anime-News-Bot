@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+*.json
+!rss_feeds.json   # optional – if you want to keep the default feed list
