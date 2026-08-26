@@ -1,49 +1,63 @@
-import asyncio
 import logging
-import os
-
-from pyrogram import Client, filters
-from pyrogram.types import Message
-
-from config import API_ID, API_HASH, BOT_TOKEN
+import asyncio
+from pyrogram import Client
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
+from config import *
 from route import web_server
+from helper.news_job import broadcast_news
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ---------- Pyrogram Client ----------
-app = Client(
-    "anime_news_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    in_memory=True
+# Professional logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ---------- Simple /start handler ----------
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(client: Client, message: Message):
-    logger.info(f"✅ /start from {message.from_user.id}")
-    await message.reply_text("Hello! I'm alive and responding to /start.")
+class AnimeBot(Client):
+    def __init__(self):
+        super().__init__(
+            name="anime_session",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            bot_token=BOT_TOKEN,
+            plugins=dict(root="plugins")  # Auto-load plugins from the 'plugins' folder
+        )
 
-# ---------- Echo for any other text ----------
-@app.on_message(filters.text & filters.private)
-async def echo(client: Client, message: Message):
-    logger.info(f"📩 Text from {message.from_user.id}: {message.text}")
-    await message.reply_text(f"You said: `{message.text}`")
+    async def start(self):
+        await super().start()
+        logging.info("✅ Pyrogram Client Started")
 
-# ---------- Main ----------
-async def main():
-    # Start health server
-    await web_server()
-    logger.info("🌐 Health server started.")
+        # --- Start Scheduler ---
+        # Runs broadcast_news every UPDATE_INTERVAL minutes (default: 5)
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            broadcast_news,
+            "interval",
+            minutes=UPDATE_INTERVAL,
+            args=[self],
+            id="broadcast_job",
+            replace_existing=True
+        )
+        scheduler.start()
+        logging.info(f"✅ Scheduler started — checking RSS every {UPDATE_INTERVAL} minute(s)")
 
-    # Start bot
-    await app.start()
-    logger.info("✅ Bot started. Waiting for messages...")
+        # --- Run once immediately on startup ---
+        asyncio.create_task(broadcast_news(self))
+        logging.info("✅ First broadcast task launched")
 
-    # Keep running
-    await asyncio.Event().wait()
+        # --- Start Web Server (health check for hosting platforms) ---
+        try:
+            runner = web.AppRunner(await web_server())
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", PORT)
+            await site.start()
+            logging.info(f"✅ Web server running on port {PORT}")
+        except Exception as e:
+            logging.error(f"❌ Web server failed to start: {e}")
+
+    async def stop(self, *args):
+        await super().stop()
+        logging.info(" Bot Stopped")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    AnimeBot().run()
