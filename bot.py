@@ -4,16 +4,16 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from pyrogram import Client
+from pyrogram.errors import FloodWait
 
 from config import API_ID, API_HASH, BOT_TOKEN, UPDATE_INTERVAL
 from helper.news_job import broadcast_news
 from helper.weekly_anime import send_weekly_anime
-from route import web_server   # aiohttp health‑check server
+from route import web_server
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- Pyrogram Client ----------
 app = Client(
     "anime_news_bot",
     api_id=API_ID,
@@ -22,19 +22,18 @@ app = Client(
     in_memory=True
 )
 
-# ---------- Load All Plugins ----------
+# ---------- Plugins ----------
 import plugins.help
 import plugins.admin
 import plugins.anime
 import plugins.img
 import plugins.trending
 import plugins.weekly
-import plugins.start   # make sure you have plugins/start.py
+import plugins.start   # ensure you have this file
 
-# ---------- Background Tasks ----------
+# ---------- Schedulers ----------
 async def news_scheduler():
-    """Run news broadcast every UPDATE_INTERVAL minutes."""
-    interval = max(1, UPDATE_INTERVAL) * 60   # seconds
+    interval = max(1, UPDATE_INTERVAL) * 60
     while True:
         try:
             await broadcast_news(app)
@@ -43,7 +42,6 @@ async def news_scheduler():
         await asyncio.sleep(interval)
 
 async def weekly_scheduler():
-    """Run weekly Top 16 every Sunday at midnight IST."""
     ist = ZoneInfo("Asia/Kolkata")
     while True:
         now = datetime.now(ist)
@@ -53,24 +51,42 @@ async def weekly_scheduler():
                 await send_weekly_anime(app)
             except Exception as e:
                 logger.error(f"Weekly anime error: {e}")
-            await asyncio.sleep(86400)   # avoid re‑trigger
+            await asyncio.sleep(86400)
         else:
-            await asyncio.sleep(60)      # check every minute
+            await asyncio.sleep(60)
+
+# ---------- Start Bot with FloodWait Retry ----------
+async def start_bot_with_retry(max_retries=5):
+    retries = 0
+    while retries < max_retries:
+        try:
+            await app.start()
+            logger.info("Bot started successfully.")
+            return
+        except FloodWait as e:
+            wait = e.x
+            logger.warning(f"FloodWait: need to wait {wait}s before retrying.")
+            await asyncio.sleep(wait)
+            retries += 1
+        except Exception as e:
+            logger.error(f"Fatal error starting bot: {e}")
+            raise
+    raise Exception("Max retries exceeded – could not start bot.")
 
 # ---------- Main ----------
 async def main():
-    # Start the aiohttp health‑check server
+    # Start health‑check web server
     await web_server()
     logger.info("Health‑check web server started.")
 
-    # Start background tasks
+    # Start bot with retry logic
+    await start_bot_with_retry()
+
+    # Now start background tasks (they use the already‑started bot)
     asyncio.create_task(news_scheduler())
     asyncio.create_task(weekly_scheduler())
 
-    # Start the bot
-    await app.start()
-    logger.info("Bot started. Waiting for messages...")
-    # Keep the event loop running
+    # Keep running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
