@@ -1,8 +1,8 @@
-pyrogram==2.0.106
-aiohttp==3.9.5
-motor==3.3.2
-httpx==0.25.2
-feedparser==6.0.10
-beautifulsoup4==4.12.2
-pymongo==4.5.0
-tgcrypto==1.2.5
+pyrofork
+tgcrypto
+aiohttp
+feedparser
+apscheduler
+aiosqlite
+beautifulsoup4
+motor
