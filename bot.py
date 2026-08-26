@@ -15,18 +15,16 @@ load_dotenv()
 # ----------------- CONFIGURATION -----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-ADMIN_CHAT_ID = TELEGRAM_CHAT_ID               # or set a separate admin ID
+ADMIN_CHAT_ID = TELEGRAM_CHAT_ID
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
-FANART_API_KEY = os.getenv("FANART_API_KEY", "")   # optional
+FANART_API_KEY = os.getenv("FANART_API_KEY", "")
 
-RSS_FEED_URL = "https://www.animenewsnetwork.com/news/rss.xml"  # default
-CHECK_INTERVAL_MINUTES = 5                     # check every 5 minutes
+RSS_FEED_URL = "https://www.animenewsnetwork.com/news/rss.xml"
+CHECK_INTERVAL_MINUTES = 5
 SEEN_FILE = "seen_links.json"
 IMAGE_CACHE_FILE = "image_cache.json"
 RSS_FEEDS_FILE = "rss_feeds.json"
 LAST_UPDATE_FILE = "last_update_id.txt"
-
-TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 # -------------------------------------------------
 
 # ---------- Flask Web Server (for Render) ----------
@@ -41,7 +39,6 @@ def run_web_server():
     port = int(os.getenv("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Start web server in background thread
 threading.Thread(target=run_web_server, daemon=True).start()
 # -------------------------------------------------
 
@@ -125,7 +122,7 @@ def fetch_news(limit=10):
             print(f"Error fetching feed {feed_url}: {e}")
     return list(all_entries.values())[:limit]
 
-# ---------- TMDb Image Fetch ----------
+# ---------- TMDb Image Fetch (for news, medium quality) ----------
 def get_anime_image(title):
     if not TMDB_API_KEY:
         return None
@@ -144,11 +141,10 @@ def get_anime_image(title):
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            results = data.get("results", [])
-            for res in results:
+            for res in data.get("results", []):
                 poster = res.get("poster_path")
                 if poster:
-                    img_url = TMDB_IMAGE_BASE + poster
+                    img_url = "https://image.tmdb.org/t/p/w500" + poster  # medium
                     cache[title] = img_url
                     save_image_cache(cache)
                     return img_url
@@ -159,11 +155,43 @@ def get_anime_image(title):
         print(f"Error fetching image: {e}")
         return None
 
+# ---------- TMDb HQ Image Fetch (for /img) ----------
+def get_anime_image_hq(title):
+    if not TMDB_API_KEY:
+        return None
+    cache = load_image_cache()
+    cache_key = f"{title}_hq"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    url = "https://api.themoviedb.org/3/search/movie"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": title,
+        "include_adult": False
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            for res in data.get("results", []):
+                poster = res.get("poster_path")
+                if poster:
+                    img_url = "https://image.tmdb.org/t/p/original" + poster  # original quality
+                    cache[cache_key] = img_url
+                    save_image_cache(cache)
+                    return img_url
+        cache[cache_key] = None
+        save_image_cache(cache)
+        return None
+    except Exception as e:
+        print(f"Error fetching HQ image: {e}")
+        return None
+
 # ---------- Build caption for news ----------
 def build_caption(title, summary, link):
     title_sc = to_small_caps(title)
     summary_sc = to_small_caps(summary)
-
     caption = f"""<blockquote>
 ╭━━━━━「 ɪɴꜰᴏ 」━━━━━╮
 
@@ -175,7 +203,6 @@ def build_caption(title, summary, link):
 
 ⚡ <a href='https://t.me/Anicore_Animes'>ꜱᴛᴀʏ ᴜᴘᴅᴀᴛᴇᴅ</a>
 </blockquote>"""
-
     caption += f"\n\n<a href='{link}'>🔗 Read more</a>"
     return caption
 
@@ -365,7 +392,8 @@ You can also use these commands:
 /help - List all commands
 /latest - Get the most recent news right now (with image)
 /anime <name> - Search for any anime and get full info + image
-/img <name> [source] - Get a high-quality poster (default tmdb, sources: tmdb, mal, fanart)
+/img <name> [source] - Get high-quality images (default: all sources)
+                   Sources: tmdb, mal, fanart, imdb
 /weekly [count] - Get top-rated anime (default 10, max 50)
 /status - Bot status and info
 (Admin only)
@@ -383,8 +411,8 @@ Stay tuned for updates! 🚀"""
 /help - Show this help menu
 /latest - Instantly fetch and send the latest news (with image)
 /anime <name> - Search for an anime and get detailed info with poster
-/img <name> [source] - Get just the poster image (default: tmdb)
-                   Sources: tmdb, mal, fanart (requires API key)
+/img <name> [source] - Get high-quality poster images (default: all sources)
+                   Sources: tmdb, mal, fanart, imdb (via tmdb)
 /weekly [count] - Get top-rated anime list with scores and ratings count (default 10)
 /status - Check bot status and schedule info
 
@@ -419,39 +447,55 @@ Stay tuned for updates! 🚀"""
             send_telegram_message(
                 "❓ Please provide an anime name.\n"
                 "<b>Usage</b>: <code>/img &lt;name&gt; [source]</code>\n"
-                "Example: <code>/img Naruto mal</code> (source optional, default: tmdb)",
+                "Example: <code>/img Naruto mal</code> (source optional, default: all)",
                 chat_id
             )
             return
         query = parts[1]
-        source = "tmdb"
+        source = "all"
         if len(parts) == 3:
             possible_source = parts[2].lower()
             if possible_source in ["tmdb", "mal", "fanart", "imdb"]:
                 source = possible_source
-        image_url = None
-        if source == "tmdb" or source == "imdb":
-            image_url = get_anime_image(query)
-        elif source == "mal":
-            info = fetch_anime_info(query)
-            image_url = info["image_url"] if info else None
-        elif source == "fanart":
-            image_url = fetch_anime_image_fanart(query)
 
-        if not image_url:
-            send_telegram_message(f"❌ Could not find an image for '<b>{query}</b>' from <b>{source.upper()}</b>.", chat_id)
+        # Collect images from the chosen source(s)
+        images = []
+        if source == "all" or source == "tmdb":
+            img = get_anime_image_hq(query)
+            if img:
+                images.append(("TMDb", img))
+        if source == "all" or source == "mal":
+            info = fetch_anime_info(query)
+            if info and info["image_url"]:
+                images.append(("MyAnimeList", info["image_url"]))
+        if source == "all" or source == "fanart":
+            img = fetch_anime_image_fanart(query)
+            if img:
+                images.append(("Fanart.tv", img))
+        if source == "imdb":  # IMDb via TMDb
+            img = get_anime_image_hq(query)
+            if img:
+                images.append(("IMDb (via TMDb)", img))
+
+        if not images:
+            send_telegram_message(f"❌ No images found for '<b>{query}</b>'.", chat_id)
             return
-        title_sc = to_small_caps(query)
-        caption = f"""<blockquote>
+
+        # Send each image as a separate message
+        for src, url in images:
+            title_sc = to_small_caps(query)
+            caption = f"""<blockquote>
 ╭━━━━━「 ɪᴍᴀɢᴇ 」━━━━━╮
 
 「 {title_sc} 」
+Source: <b>{src}</b>
 
 ╰━━━━━━━━━━━━━━╯
 
 ⚡ <a href='https://t.me/Anicore_Animes'>ꜱᴛᴀʏ ᴜᴘᴅᴀᴛᴇᴅ</a>
 </blockquote>"""
-        send_telegram_message(caption, chat_id, photo_url=image_url)
+            send_telegram_message(caption, chat_id, photo_url=url)
+            time.sleep(1)  # avoid rate limits
 
     elif text.startswith("/weekly"):
         parts = text.split()
@@ -483,7 +527,7 @@ Stay tuned for updates! 🚀"""
         if news:
             title, summary, link = news[0]
             caption = build_caption(title, summary, link)
-            img_url = get_anime_image(title)
+            img_url = get_anime_image(title)  # medium quality for speed
             send_telegram_message(caption, chat_id, photo_url=img_url)
         else:
             send_telegram_message("❌ Could not fetch the latest news right now.", chat_id)
@@ -599,7 +643,7 @@ def job():
     if new_entries:
         for title, summary, link in new_entries:
             caption = build_caption(title, summary, link)
-            img_url = get_anime_image(title)
+            img_url = get_anime_image(title)   # medium quality for speed
             send_telegram_message(caption, photo_url=img_url)
             time.sleep(1)
         save_seen(seen)
@@ -609,7 +653,6 @@ def job():
 
 # ---------- Main Loop ----------
 if __name__ == "__main__":
-    # Run once at startup
     job()
     schedule.every(CHECK_INTERVAL_MINUTES).minutes.do(job)
 
