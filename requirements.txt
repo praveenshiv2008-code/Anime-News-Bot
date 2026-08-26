@@ -1,11 +1,3 @@
-pyrofork
-tgcrypto
-aiohttp
 feedparser
-apscheduler
-aiosqlite
-beautifulsoup4
-motor
-httpx
-pymongo
-python-dotenv
+requests
+schedule
