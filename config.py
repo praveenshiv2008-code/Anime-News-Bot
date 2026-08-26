@@ -22,3 +22,4 @@ RESTART_LOG_CHAT = os.getenv(
     "RESTART_LOG_CHAT",
     ""
 )
+ADMIN_IDS = [OWNER_ID, ADMIN_ID]
