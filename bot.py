@@ -29,7 +29,7 @@ import plugins.anime
 import plugins.img
 import plugins.trending
 import plugins.weekly
-import plugins.start   # we add this now
+import plugins.start   # make sure you have plugins/start.py
 
 # ---------- Background Tasks ----------
 async def news_scheduler():
@@ -70,7 +70,8 @@ async def main():
     # Start the bot
     await app.start()
     logger.info("Bot started. Waiting for messages...")
-    await asyncio.Event().wait()   # keep running
+    # Keep the event loop running
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
