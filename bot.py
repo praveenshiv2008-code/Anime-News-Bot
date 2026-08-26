@@ -29,7 +29,7 @@ import plugins.anime
 import plugins.img
 import plugins.trending
 import plugins.weekly
-import plugins.start   # ensure you have this file
+import plugins.start
 
 # ---------- Schedulers ----------
 async def news_scheduler():
@@ -55,8 +55,8 @@ async def weekly_scheduler():
         else:
             await asyncio.sleep(60)
 
-# ---------- Start Bot with FloodWait Retry ----------
-async def start_bot_with_retry(max_retries=5):
+# ---------- Start Bot with Retry ----------
+async def start_bot_with_retry(max_retries=10):
     retries = 0
     while retries < max_retries:
         try:
@@ -64,7 +64,7 @@ async def start_bot_with_retry(max_retries=5):
             logger.info("Bot started successfully.")
             return
         except FloodWait as e:
-            wait = e.x
+            wait = e.value  # <-- FIXED: use .value instead of .x
             logger.warning(f"FloodWait: need to wait {wait}s before retrying.")
             await asyncio.sleep(wait)
             retries += 1
@@ -75,18 +75,14 @@ async def start_bot_with_retry(max_retries=5):
 
 # ---------- Main ----------
 async def main():
-    # Start health‑check web server
     await web_server()
     logger.info("Health‑check web server started.")
 
-    # Start bot with retry logic
     await start_bot_with_retry()
 
-    # Now start background tasks (they use the already‑started bot)
     asyncio.create_task(news_scheduler())
     asyncio.create_task(weekly_scheduler())
 
-    # Keep running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
