@@ -1,10 +1,7 @@
-pyrofork
-tgcrypto
-aiohttp
-feedparser
-apscheduler
-aiosqlite
-beautifulsoup4
-motor
-httpx
+pyrogram
 Flask==2.3.3
+feedparser
+beautifulsoup4
+aiohttp
+motor
+pymongo
