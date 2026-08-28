@@ -121,7 +121,7 @@ def fetch_news(limit=10):
             print(f"Error fetching feed {feed_url}: {e}")
     return list(all_entries.values())[:limit]
 
-# ---------- Title cleaning for image search ----------
+# ---------- Clean title ----------
 def clean_title_for_search(title):
     stop_words = ["anime", "manga", "tv", "series", "announced", "confirmed", 
                   "release", "premiere", "trailer", "teaser", "new", "coming"]
@@ -131,45 +131,55 @@ def clean_title_for_search(title):
         cleaned = words[:5]
     return " ".join(cleaned[:5])
 
-# ---------- Image fetch (with fallback) ----------
+# ---------- Image fetch (aggressive) ----------
 def get_anime_image(title):
     if not TMDB_API_KEY:
-        print("No TMDB API key - skipping image fetch.")
+        print("⚠️ No TMDB API key - image fetch disabled.")
         return None
     cache = load_image_cache()
     if title in cache:
         return cache[title]
-    
-    search_query = clean_title_for_search(title)
-    print(f"Searching image for: '{title}' (cleaned: '{search_query}')")
-    
-    # Try TMDb
-    url = "https://api.themoviedb.org/3/search/movie"
-    params = {"api_key": TMDB_API_KEY, "query": search_query, "include_adult": False}
+
+    clean = clean_title_for_search(title)
+    # Try original first, then cleaned
+    search_queries = list(dict.fromkeys([title, clean]))
+
     img_url = None
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            for res in data.get("results", []):
-                poster = res.get("poster_path")
-                if poster:
-                    img_url = "https://image.tmdb.org/t/p/w500" + poster
-                    break
-    except Exception as e:
-        print(f"TMDb error: {e}")
-    
-    # Fallback to MAL
-    if not img_url:
-        print("TMDb no image, trying MAL...")
+
+    # 1. TMDb
+    for query in search_queries:
+        if img_url:
+            break
+        print(f"🔎 TMDb searching: '{query}'")
+        url = "https://api.themoviedb.org/3/search/movie"
+        params = {"api_key": TMDB_API_KEY, "query": query, "include_adult": False}
         try:
-            mal_info = fetch_anime_info(search_query)
-            if mal_info and mal_info["image_url"]:
-                img_url = mal_info["image_url"]
-                print(f"Found image from MAL: {img_url}")
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for res in data.get("results", []):
+                    poster = res.get("poster_path")
+                    if poster:
+                        img_url = "https://image.tmdb.org/t/p/w500" + poster
+                        print(f"✅ TMDb found: {img_url}")
+                        break
         except Exception as e:
-            print(f"MAL error: {e}")
-    
+            print(f"TMDb error: {e}")
+
+    # 2. MAL fallback
+    if not img_url:
+        for query in search_queries:
+            if img_url:
+                break
+            print(f"🔎 MAL searching: '{query}'")
+            try:
+                info = fetch_anime_info(query)
+                if info and info["image_url"]:
+                    img_url = info["image_url"]
+                    print(f"✅ MAL found: {img_url}")
+            except Exception as e:
+                print(f"MAL error: {e}")
+
     cache[title] = img_url
     save_image_cache(cache)
     return img_url
@@ -182,32 +192,35 @@ def get_anime_image_hq(title):
     cache_key = f"{title}_hq"
     if cache_key in cache:
         return cache[cache_key]
-    
-    search_query = clean_title_for_search(title)
-    url = "https://api.themoviedb.org/3/search/movie"
-    params = {"api_key": TMDB_API_KEY, "query": search_query, "include_adult": False}
+    clean = clean_title_for_search(title)
+    search_queries = list(dict.fromkeys([title, clean]))
     img_url = None
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            for res in data.get("results", []):
-                poster = res.get("poster_path")
-                if poster:
-                    img_url = "https://image.tmdb.org/t/p/original" + poster
-                    break
-    except Exception as e:
-        print(f"HQ TMDb error: {e}")
-    
-    # If no TMDb HQ, try MAL
-    if not img_url:
+    for query in search_queries:
+        if img_url:
+            break
+        url = "https://api.themoviedb.org/3/search/movie"
+        params = {"api_key": TMDB_API_KEY, "query": query, "include_adult": False}
         try:
-            mal_info = fetch_anime_info(search_query)
-            if mal_info and mal_info["image_url"]:
-                img_url = mal_info["image_url"]
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for res in data.get("results", []):
+                    poster = res.get("poster_path")
+                    if poster:
+                        img_url = "https://image.tmdb.org/t/p/original" + poster
+                        break
         except Exception as e:
-            print(f"MAL HQ error: {e}")
-    
+            print(f"HQ TMDb error: {e}")
+    if not img_url:
+        for query in search_queries:
+            if img_url:
+                break
+            try:
+                info = fetch_anime_info(query)
+                if info and info["image_url"]:
+                    img_url = info["image_url"]
+            except Exception as e:
+                print(f"HQ MAL error: {e}")
     cache[cache_key] = img_url
     save_image_cache(cache)
     return img_url
@@ -658,6 +671,10 @@ def job():
         for title, summary, link in new_entries:
             caption = build_caption(title, summary, link)
             img_url = get_anime_image(title)
+            if img_url:
+                print(f"✅ Sending news with image for: {title}")
+            else:
+                print(f"⚠️ No image found for: {title} – sending text only.")
             send_telegram_message(caption, photo_url=img_url)
             time.sleep(1)
         save_seen(seen)
