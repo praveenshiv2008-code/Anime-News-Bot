@@ -131,7 +131,7 @@ def clean_title_for_search(title):
         cleaned = words[:5]
     return " ".join(cleaned[:5])
 
-# ---------- Image fetch (aggressive) ----------
+# ---------- Image fetch for news (single, fallback) ----------
 def get_anime_image(title):
     if not TMDB_API_KEY:
         print("⚠️ No TMDB API key - image fetch disabled.")
@@ -139,14 +139,9 @@ def get_anime_image(title):
     cache = load_image_cache()
     if title in cache:
         return cache[title]
-
     clean = clean_title_for_search(title)
-    # Try original first, then cleaned
     search_queries = list(dict.fromkeys([title, clean]))
-
     img_url = None
-
-    # 1. TMDb
     for query in search_queries:
         if img_url:
             break
@@ -165,8 +160,6 @@ def get_anime_image(title):
                         break
         except Exception as e:
             print(f"TMDb error: {e}")
-
-    # 2. MAL fallback
     if not img_url:
         for query in search_queries:
             if img_url:
@@ -179,24 +172,23 @@ def get_anime_image(title):
                     print(f"✅ MAL found: {img_url}")
             except Exception as e:
                 print(f"MAL error: {e}")
-
     cache[title] = img_url
     save_image_cache(cache)
     return img_url
 
-# ---------- HQ Image for /img ----------
-def get_anime_image_hq(title):
+# ---------- Fetch multiple HQ images from TMDb ----------
+def get_anime_images_hq(title, limit=5):
     if not TMDB_API_KEY:
-        return None
+        return []
     cache = load_image_cache()
-    cache_key = f"{title}_hq"
+    cache_key = f"{title}_hq_list"
     if cache_key in cache:
         return cache[cache_key]
     clean = clean_title_for_search(title)
     search_queries = list(dict.fromkeys([title, clean]))
-    img_url = None
+    img_urls = []
     for query in search_queries:
-        if img_url:
+        if img_urls:
             break
         url = "https://api.themoviedb.org/3/search/movie"
         params = {"api_key": TMDB_API_KEY, "query": query, "include_adult": False}
@@ -204,26 +196,49 @@ def get_anime_image_hq(title):
             resp = requests.get(url, params=params, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
-                for res in data.get("results", []):
+                for res in data.get("results", [])[:limit]:
                     poster = res.get("poster_path")
                     if poster:
-                        img_url = "https://image.tmdb.org/t/p/original" + poster
-                        break
+                        img_urls.append("https://image.tmdb.org/t/p/original" + poster)
         except Exception as e:
             print(f"HQ TMDb error: {e}")
-    if not img_url:
-        for query in search_queries:
-            if img_url:
-                break
-            try:
-                info = fetch_anime_info(query)
-                if info and info["image_url"]:
-                    img_url = info["image_url"]
-            except Exception as e:
-                print(f"HQ MAL error: {e}")
-    cache[cache_key] = img_url
+    if not img_urls:
+        # fallback: try to get at least one from MAL
+        try:
+            info = fetch_anime_info(title)
+            if info and info["image_url"]:
+                img_urls.append(info["image_url"])
+        except Exception:
+            pass
+    cache[cache_key] = img_urls
     save_image_cache(cache)
-    return img_url
+    return img_urls
+
+# ---------- Fetch multiple images from Fanart.tv ----------
+def fetch_anime_images_fanart(title):
+    if not FANART_API_KEY:
+        return []
+    search_url = "https://webservice.fanart.tv/v3/movies/search"
+    params = {"api_key": FANART_API_KEY, "query": title}
+    try:
+        resp = requests.get(search_url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get("items", [])
+            if results:
+                movie_id = results[0].get("id")
+                if movie_id:
+                    detail_url = f"https://webservice.fanart.tv/v3/movies/{movie_id}"
+                    detail_params = {"api_key": FANART_API_KEY}
+                    detail_resp = requests.get(detail_url, params=detail_params, timeout=10)
+                    if detail_resp.status_code == 200:
+                        detail_data = detail_resp.json()
+                        posters = detail_data.get("movieposter", [])
+                        return [p.get("url") for p in posters if p.get("url")]
+        return []
+    except Exception as e:
+        print(f"Fanart error: {e}")
+        return []
 
 # ---------- Build caption ----------
 def build_caption(title, summary, link):
@@ -385,33 +400,6 @@ def build_weekly_caption(top_list):
         caption += f"\n<a href='{top_list[0]['mal_url']}'>🔗 View #1 on MyAnimeList</a>"
     return caption
 
-# ---------- Fanart.tv ----------
-def fetch_anime_image_fanart(title):
-    if not FANART_API_KEY:
-        return None
-    search_url = "https://webservice.fanart.tv/v3/movies/search"
-    params = {"api_key": FANART_API_KEY, "query": title}
-    try:
-        resp = requests.get(search_url, params=params, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            results = data.get("items", [])
-            if results:
-                movie_id = results[0].get("id")
-                if movie_id:
-                    detail_url = f"https://webservice.fanart.tv/v3/movies/{movie_id}"
-                    detail_params = {"api_key": FANART_API_KEY}
-                    detail_resp = requests.get(detail_url, params=detail_params, timeout=10)
-                    if detail_resp.status_code == 200:
-                        detail_data = detail_resp.json()
-                        posters = detail_data.get("movieposter", [])
-                        if posters:
-                            return posters[0].get("url")
-        return None
-    except Exception as e:
-        print(f"Fanart error: {e}")
-        return None
-
 # ---------- Command Handlers ----------
 def process_command(text, chat_id):
     if text == "/start":
@@ -424,8 +412,8 @@ You can also use these commands:
 /help - List all commands
 /latest - Get the most recent news right now (with image)
 /anime <name> - Search for any anime and get full info + image
-/img <name> [source] - Get high-quality images (default: all sources)
-                   Sources: tmdb, mal, fanart, imdb
+/img <name> [source] - Get ALL high-quality images (default: all sources)
+                   Sources: tmdb, mal, fanart, imdb (via tmdb)
 /weekly [count] - Get top-rated anime (default 10, max 50)
 /status - Bot status and info
 (Admin only)
@@ -443,7 +431,7 @@ Stay tuned for updates! 🚀"""
 /help - Show this help menu
 /latest - Instantly fetch and send the latest news (with image)
 /anime <name> - Search for an anime and get detailed info with poster
-/img <name> [source] - Get high-quality poster images (default: all sources)
+/img <name> [source] - Get ALL high-quality images from the chosen source (default: all)
                    Sources: tmdb, mal, fanart, imdb (via tmdb)
 /weekly [count] - Get top-rated anime list with scores and ratings count (default 10)
 /status - Check bot status and schedule info
@@ -490,28 +478,31 @@ Stay tuned for updates! 🚀"""
             if possible_source in ["tmdb", "mal", "fanart", "imdb"]:
                 source = possible_source
 
-        images = []
+        # Collect images (multiple per source)
+        images = []  # list of (source_label, url)
         if source == "all" or source == "tmdb":
-            img = get_anime_image_hq(query)
-            if img:
-                images.append(("TMDb", img))
+            tmdb_imgs = get_anime_images_hq(query, limit=5)
+            for idx, url in enumerate(tmdb_imgs, start=1):
+                images.append((f"TMDb #{idx}", url))
         if source == "all" or source == "mal":
             info = fetch_anime_info(query)
             if info and info["image_url"]:
                 images.append(("MyAnimeList", info["image_url"]))
         if source == "all" or source == "fanart":
-            img = fetch_anime_image_fanart(query)
-            if img:
-                images.append(("Fanart.tv", img))
+            fanart_imgs = fetch_anime_images_fanart(query)
+            for idx, url in enumerate(fanart_imgs, start=1):
+                images.append((f"Fanart.tv #{idx}", url))
         if source == "imdb":
-            img = get_anime_image_hq(query)
-            if img:
-                images.append(("IMDb (via TMDb)", img))
+            # IMDb via TMDb
+            tmdb_imgs = get_anime_images_hq(query, limit=5)
+            for idx, url in enumerate(tmdb_imgs, start=1):
+                images.append((f"IMDb (via TMDb) #{idx}", url))
 
         if not images:
             send_telegram_message(f"❌ No images found for '<b>{query}</b>'.", chat_id)
             return
 
+        # Send each image separately
         for src, url in images:
             title_sc = to_small_caps(query)
             caption = f"""<blockquote>
@@ -525,7 +516,7 @@ Source: <b>{src}</b>
 ⚡ <a href='https://t.me/Anicore_Animes'>ꜱᴛᴀʏ ᴜᴘᴅᴀᴛᴇᴅ</a>
 </blockquote>"""
             send_telegram_message(caption, chat_id, photo_url=url)
-            time.sleep(1)
+            time.sleep(0.5)  # small delay to avoid rate limits
 
     elif text.startswith("/weekly"):
         parts = text.split()
